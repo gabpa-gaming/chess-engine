@@ -280,7 +280,7 @@ mod tests {
     }
 
     fn model() -> LinearModel {
-        let weights = (1..=385)
+        let weights = (1..=408)
             .map(|weight| weight.to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -308,7 +308,7 @@ mod tests {
         initialized.init(&board);
         assert_eq!(stepped.get_output(), initialized.get_output());
 
-        board.undo_move().unwrap();
+        board.undo_move();
         stepped.undo_step(&board);
 
         initialized.init(&board);
@@ -356,7 +356,23 @@ mod tests {
         let board = Chessboard::<BigVariant>::new();
         let input = LinearModel::board_to_input(&board);
 
-        assert_eq!(input.len(), 6 * BigVariant::AREA + 1);
+        assert_eq!(input.len(), 6 * BigVariant::AREA + 24);
         assert_eq!(input[6 * BigVariant::AREA], 1.0);
+    }
+
+    #[test]
+    fn board_input_includes_position_state_features() {
+        let board = Chessboard::<RegularVariant>::from_fen(
+            "4k3/8/8/8/8/8/4R3/R3K2R b KQkq e3 17 1",
+        )
+        .unwrap();
+        let input = LinearModel::board_to_input(&board);
+        let state_start = 6 * RegularVariant::AREA + 1;
+
+        assert_eq!(&input[state_start..state_start + 4], &[1.0; 4]);
+        assert_eq!(input[state_start + 4 + 12], 1.0);
+        assert_eq!(input[state_start + 20], 1.0);
+        assert_eq!(input[state_start + 21], 1.0);
+        assert_eq!(input[state_start + 22], 17.0);
     }
 }

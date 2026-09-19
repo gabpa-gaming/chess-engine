@@ -45,6 +45,15 @@ where
     zobrist: u64,
 }
 
+impl<C: BoardConfig + Clone + Debug> MoveHistoryData<C>
+where
+    [(); C::AREA]: Sized,
+{
+    pub fn moved(&self) -> C::MoveType {
+        self.moved
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Chessboard<C: BoardConfig + Clone + Debug>
 where
@@ -230,6 +239,11 @@ where
                 let rank = (8 - (bytes[1] - b'0')) as usize;
                 board.en_passant_square = Some((rank * 8 + file) as u8);
             }
+        }
+        if let Some(halfmove_clock) = parts.get(4) {
+            board.halfmove_clock = halfmove_clock
+                .parse()
+                .map_err(|_| "Invalid halfmove clock".to_string())?;
         }
         board.zobrist = board.calculate_zobrist_hash();
         Ok(board)
@@ -864,11 +878,11 @@ where
         self.move_history.last()
     }
 
-    pub fn undo_move(&mut self) -> anyhow::Result<C::MoveType> {
+    pub fn undo_move(&mut self) -> C::MoveType {
         let last_move = self
             .move_history
             .pop()
-            .ok_or_else(|| anyhow::anyhow!("No move history left!"))?;
+            .expect("No move history left!");
         if !matches!(
             last_move.moved.flag(),
             MoveFlag::Capture | MoveFlag::Quiet | MoveFlag::DoublePawnPush | MoveFlag::Promotion
@@ -879,7 +893,7 @@ where
             self.en_passant_square = last_move.en_passant;
             self.zobrist = last_move.zobrist;
             self.verify_board_state("After undo_move");
-            return Ok(last_move.moved.clone());
+            return last_move.moved.clone();
         }
         let from_bit = 1 << last_move.moved.from();
         let to_bit = 1 << last_move.moved.to();
@@ -923,7 +937,7 @@ where
         self.en_passant_square = last_move.en_passant;
         self.zobrist = last_move.zobrist;
         self.verify_board_state("After undo_move");
-        Ok(last_move.moved)
+        last_move.moved
     }
 
     pub fn undo_special_move(&mut self, last_move: &MoveHistoryData<C>) -> Result<(), ()> {
@@ -1039,6 +1053,38 @@ where
 
     pub fn current_player(&self) -> CurrentPlayer {
         self.turn.clone()
+    }
+
+    pub fn castling_rights(&self) -> u128 {
+        self.castling_rights
+    }
+
+    pub fn en_passant_square(&self) -> Option<u8> {
+        self.en_passant_square
+    }
+
+    pub fn halfmove_clock(&self) -> u8 {
+        self.halfmove_clock
+    }
+
+    pub fn repetition_count(&self) -> usize {
+        1 + self
+            .move_history
+            .iter()
+            .filter(|entry| entry.zobrist == self.zobrist)
+            .count()
+    }
+
+    pub fn piece_at(&self, square: usize) -> Piece<C> {
+        assert!(square < C::AREA, "Square index is outside the board");
+        let piece = self.pieces[square].clone();
+        if self.white_pieces_bitboard & (1_u128 << square) != 0 {
+            Piece::White(piece)
+        } else if self.black_pieces_bitboard & (1_u128 << square) != 0 {
+            Piece::Black(piece)
+        } else {
+            Piece::None
+        }
     }
 
     pub fn zobrist_hash(&self) -> u64 {

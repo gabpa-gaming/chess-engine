@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-INPUT_SIZE = 384
+INPUT_SIZE = 408
 
 MIN_MUT_C = 10
 MAX_MUT_C = 50
@@ -78,6 +78,7 @@ def heuristic_model() -> dict[str, Any]:
                 if rank == 1 and file in {2, 6}:
                     value += 12.0
             weights.append(value)
+    weights.extend([0.0] * 24)
     return {"weights": weights, "bias": 0.0}
 
 def choose_mutation_range() -> float:

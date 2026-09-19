@@ -62,6 +62,15 @@ pub struct SearchLimits {
     pub mate: Option<u32>,
     pub move_time: Option<u64>,
     pub infinite: bool,
+    pub go_variant: GoVariant,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum GoVariant {
+    #[default]
+    Regular,
+    Perft,
+    Weights,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,6 +214,7 @@ fn parse_go<C: BoardConfig>(arguments: &[&str]) -> Result<SearchLimits, ParseErr
             "movetime" => {
                 limits.move_time = Some(parse_number(arguments.get(index), "go movetime")?)
             }
+            "weights" => limits.go_variant = GoVariant::Weights,
             argument => return invalid(argument, "go"),
         }
 

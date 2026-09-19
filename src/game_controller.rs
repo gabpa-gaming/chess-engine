@@ -3,9 +3,10 @@ use crate::chess_board::{Chessboard, CurrentPlayer, MoveLegality};
 use crate::chess_engine::ChessEngine;
 use crate::chess_engine::Engine;
 use crate::chess_move::{MoveFlag, MoveTrait};
-use crate::eval::{DeadSimpleEvaluator, MLEvaluator};
+use crate::eval::{DeadSimpleEvaluator, LayeredMLEvaluator, MLEvaluator};
 use crate::ml::LinearModel;
 use crate::piece::{Piece, PieceType};
+use crate::uci::GoVariant;
 use anyhow::anyhow;
 use std::fmt::Debug;
 use std::io;
@@ -63,9 +64,8 @@ where
         self.chessboard.apply_move_checked(move_)
     }
 
-    pub fn undo(&mut self) -> anyhow::Result<()> {
-        self.chessboard.undo_move()?;
-        Ok(())
+    pub fn undo(&mut self) {
+        self.chessboard.undo_move();
     }
 
     pub fn from_uci(&mut self, input: &str) -> Option<C::MoveType> {
@@ -73,9 +73,9 @@ where
         self.move_from_uci(uci_move)
     }
 
-    pub fn move_to_uci(&self, move_: &C::MoveType) -> String {
-        let from = self.square_to_uci(move_.from());
-        let to = self.square_to_uci(move_.to());
+    pub fn move_to_uci(move_: &C::MoveType) -> String {
+        let from = Self::square_to_uci(move_.from());
+        let to = Self::square_to_uci(move_.to());
         let promotion = match move_.promotion() {
             PieceType::Queen(_) => "q",
             PieceType::Rook(_) => "r",
@@ -113,7 +113,7 @@ where
             })
     }
 
-    fn square_to_uci(&self, square: u8) -> String {
+    fn square_to_uci(square: u8) -> String {
         let file = (square as usize) % C::WIDTH;
         let rank = C::HEIGHT - (square as usize / C::WIDTH);
         format!("{}{}", (b'a' + file as u8) as char, rank)
@@ -352,7 +352,7 @@ where
                             .len();
                         println!("Generated {} responses", mov_c);
                     }
-                    self.chessboard_mut().undo_move().unwrap();
+                    self.chessboard_mut().undo_move();
                     count += 1;
                 } else {
                     count += 1;
@@ -372,7 +372,7 @@ where
                 Chessboard::display_board(&board.get_pieces(), 8);
             }
             count += self.perf_mode(depth - 1, speed);
-            self.chessboard_mut().undo_move().unwrap();
+            self.chessboard_mut().undo_move();
         }
         count
     }
@@ -389,6 +389,18 @@ impl GameController<RegularVariant> {
                     ))))
                 } else {
                     Err(anyhow!("Incorrect format. Try: ml(path)"))
+                }
+            }
+            e if e.starts_with("layeredml") => {
+                if let Some(inner) = e
+                    .strip_prefix("layeredml(")
+                    .and_then(|x| x.strip_suffix(')'))
+                {
+                    Ok(Box::new(Engine::new(
+                        LayeredMLEvaluator::<RegularVariant>::load_model(inner)?,
+                    )))
+                } else {
+                    Err(anyhow!("Incorrect format. Try: layeredml(path)"))
                 }
             }
             _ => Err(anyhow!(
@@ -447,17 +459,20 @@ impl GameController<RegularVariant> {
                         eprintln!("UCI position error: illegal move");
                     }
                 }
-                crate::uci::Command::Go(limits) => {
-                    let depth = limits.depth.unwrap_or(settings.search_max_depth);
-                    if let Some(best_move) = engine.search(game.chessboard(), limits) {
-                        let uci_mov = game.move_to_uci(&best_move);
+                crate::uci::Command::Go(mut limits) => {
+                    if limits.go_variant == GoVariant::Weights {
+                        let inputs = LinearModel::board_to_input(&game.chessboard());
                         println!(
-                            "info depth {} score cp {} nodes {} pv {}",
-                            depth,
-                            engine.get_score(),
-                            engine.get_nodes_searched(),
-                            uci_mov
+                            "{}",
+                            serde_json::to_string(inputs.as_slice()).expect("Serialization error.")
                         );
+                        continue;
+                    }
+                    let depth = limits.depth.unwrap_or(settings.search_max_depth);
+                    limits.depth = Some(depth);
+                    engine.search(game.chessboard(), limits);
+                    if let Some(best_move) = engine.get_next_move(){
+                        let uci_mov = Self::move_to_uci(&best_move);
                         println!("bestmove {}", uci_mov);
                     } else {
                         println!("bestmove 0000");
@@ -479,8 +494,10 @@ impl GameController<RegularVariant> {
                                 Ok(next_engine) => {
                                     engine = next_engine;
                                     settings.evaluator_name = value;
+                                },
+                                Err(error) => {
+                                    eprintln!("UCI option error: {error}");
                                 }
-                                Err(error) => eprintln!("UCI option error: {error}"),
                             }
                         }
                     }
