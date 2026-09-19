@@ -5,6 +5,102 @@ use crate::piece::Piece;
 use serde::{Deserialize, Serialize};
 
 const STATE_FEATURES: usize = 23;
+
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FeatureMapping {
+    #[default]
+    ColorPerMapping,
+    TwoColorsPerMapping,
+}
+
+impl FeatureMapping {
+    pub fn input_size<C: BoardConfig>(self) -> usize {
+        self.piece_planes() * C::AREA + 1 + STATE_FEATURES
+    }
+
+    fn piece_planes(self) -> usize {
+        match self {
+            Self::ColorPerMapping => 6,
+            Self::TwoColorsPerMapping => 12,
+        }
+    }
+
+    pub fn board_to_input<C>(self, cb: &Chessboard<C>) -> Vec<f32>
+    where
+        C: BoardConfig + PartialEq + Eq,
+        [(); C::AREA]: Sized,
+    {
+        let mut input = vec![0.0; self.input_size::<C>()];
+        for square in 0..C::AREA {
+            self.write_square(cb, square, &mut input);
+        }
+        self.write_state(cb, &mut input);
+        input
+    }
+
+    fn write_square<C>(self, cb: &Chessboard<C>, square: usize, input: &mut [f32])
+    where
+        C: BoardConfig + PartialEq + Eq,
+        [(); C::AREA]: Sized,
+    {
+        self.for_each_square_update(cb, square, |index, value| input[index] = value);
+    }
+
+    fn for_each_square_update<C>(
+        self,
+        cb: &Chessboard<C>,
+        square: usize,
+        mut update: impl FnMut(usize, f32),
+    )
+    where
+        C: BoardConfig + PartialEq + Eq,
+        [(); C::AREA]: Sized,
+    {
+        debug_assert!(square < C::AREA);
+        let rank = square / C::WIDTH;
+        let file = square % C::WIDTH;
+        let mirrored_square = (C::HEIGHT - 1 - rank) * C::WIDTH + file;
+
+        match self {
+            Self::ColorPerMapping => {
+                for (target, white_square, black_square) in [
+                    (square, square, mirrored_square),
+                    (mirrored_square, mirrored_square, square),
+                ] {
+                    for kind in 0..6 {
+                        update(kind * C::AREA + target, matches!(cb.piece_at(white_square), Piece::White(piece) if piece.to_index() as usize == kind + 1)
+                            as u8 as f32
+                            - matches!(cb.piece_at(black_square), Piece::Black(piece) if piece.to_index() as usize == kind + 1)
+                                as u8 as f32);
+                    }
+                }
+            }
+            Self::TwoColorsPerMapping => {
+                for kind in 0..6 {
+                    update(kind * C::AREA + square, matches!(cb.piece_at(square), Piece::White(piece) if piece.to_index() as usize == kind + 1) as u8 as f32);
+                    update((6 + kind) * C::AREA + square, matches!(cb.piece_at(square), Piece::Black(piece) if piece.to_index() as usize == kind + 1) as u8 as f32);
+                }
+            }
+        }
+    }
+
+    fn write_state<C>(self, cb: &Chessboard<C>, input: &mut [f32])
+    where
+        C: BoardConfig + PartialEq + Eq,
+        [(); C::AREA]: Sized,
+    {
+        let state_start = self.piece_planes() * C::AREA;
+        input[state_start] = if cb.current_player() == CurrentPlayer::White {
+            1.0
+        } else {
+            -1.0
+        };
+        input[state_start + 1..].copy_from_slice(&LinearModel::state_features(cb));
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LinearModel {
     weights: Vec<f32>,
@@ -22,7 +118,7 @@ impl LinearModel {
     pub fn bias(&self) -> f32 {
         self.bias
     }
-    
+
     pub fn forward(&self, input: &[f32]) -> f32 {
         assert_eq!(input.len(), self.weights.len());
 
@@ -97,10 +193,12 @@ impl LinearModel {
     {
         let mut input = [0.0; STATE_FEATURES];
         let rights = cb.castling_rights();
-        input[0] = ((rights & ((1_u128 << 60) | (1_u128 << 63))) != 0) as u8 as f32;
-        input[1] = ((rights & ((1_u128 << 60) | (1_u128 << 56))) != 0) as u8 as f32;
-        input[2] = ((rights & ((1_u128 << 4) | (1_u128 << 7))) != 0) as u8 as f32;
-        input[3] = ((rights & ((1_u128 << 4) | (1_u128 << 0))) != 0) as u8 as f32;
+        let white_start = (C::HEIGHT - 1) * C::WIDTH;
+        let black_start = 0;
+        input[0] = ((rights & ((1_u128 << (white_start + 4)) | (1_u128 << (white_start + C::WIDTH - 1)))) != 0) as u8 as f32;
+        input[1] = ((rights & ((1_u128 << (white_start + 4)) | (1_u128 << white_start))) != 0) as u8 as f32;
+        input[2] = ((rights & ((1_u128 << (black_start + 4)) | (1_u128 << (black_start + C::WIDTH - 1)))) != 0) as u8 as f32;
+        input[3] = ((rights & ((1_u128 << (black_start + 4)) | (1_u128 << black_start))) != 0) as u8 as f32;
 
         if C::WIDTH == 8 && C::HEIGHT == 8 {
             if let Some(square) = cb.en_passant_square() {
@@ -118,19 +216,46 @@ impl LinearModel {
         }
 
         input[20] = cb.repetition_count() as f32;
-        input[21] = if C::WIDTH == 8 && C::HEIGHT == 8 {
-            cb.is_king_checked(cb.current_player()) as u8 as f32
-        } else {
-            0.0
-        };
+        let current_king_exists = cb.get_pieces().iter().any(|piece| {
+            matches!(piece, Piece::White(crate::piece::PieceType::King(_)) | Piece::Black(crate::piece::PieceType::King(_)))
+        });
+        input[21] = (current_king_exists && cb.is_king_checked(cb.current_player())) as u8 as f32;
         input[22] = cb.halfmove_clock() as f32;
         input
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MLModel {
+    #[serde(flatten)]
+    linear: LinearModel,
+    #[serde(default)]
+    mapping: FeatureMapping,
+}
+
+impl MLModel {
+    pub fn new(linear: LinearModel, mapping: FeatureMapping) -> Self {
+        Self { linear, mapping }
+    }
+
+    pub fn load_model(path: &str) -> anyhow::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        serde_json::from_str(&json).map_err(|_| anyhow::anyhow!("Couldn't deserialize json model."))
+    }
+
+    pub fn mapping(&self) -> FeatureMapping {
+        self.mapping
+    }
+
+    fn into_parts(self) -> (LinearModel, FeatureMapping) {
+        (self.linear, self.mapping)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct LinearStepper {
     model: LinearModel,
+    mapping: FeatureMapping,
     inputs: Vec<f32>,
     current_score: f32,
     changed_squares: Vec<Vec<usize>>,
@@ -138,12 +263,22 @@ pub struct LinearStepper {
 
 impl LinearStepper {
     pub fn new(model: LinearModel) -> Self {
+        Self::with_mapping(model, FeatureMapping::ColorPerMapping)
+    }
+
+    pub fn with_mapping(model: LinearModel, mapping: FeatureMapping) -> Self {
         LinearStepper {
             current_score: model.clone().get_bias(),
             inputs: vec![0.0; model.input_size()],
             model,
+            mapping,
             changed_squares: Vec::new(),
         }
+    }
+
+    pub fn from_ml_model(model: MLModel) -> Self {
+        let (linear, mapping) = model.into_parts();
+        Self::with_mapping(linear, mapping)
     }
 
     pub fn set_input(&mut self, index: usize, val: f32) -> anyhow::Result<(), anyhow::Error> {
@@ -163,10 +298,10 @@ impl LinearStepper {
         Ok(())
     }
 
-    pub fn bias(&self) -> f32{
+    pub fn bias(&self) -> f32 {
         self.model.bias
     }
-    
+
     pub fn update_square<C>(&mut self, cb: &Chessboard<C>, square: usize)
     where
         C: BoardConfig + PartialEq + Eq,
@@ -174,32 +309,12 @@ impl LinearStepper {
         [(); C::AREA]: Sized,
     {
         assert!(square < C::AREA, "Square index is outside the board");
-        let rank = square / C::WIDTH;
-        let file = square % C::WIDTH;
-        let mirrored_square = (C::HEIGHT - 1 - rank) * C::WIDTH + file;
-
-        let piece = cb.piece_at(square);
-        let mirrored_piece = cb.piece_at(mirrored_square);
-        for piece_kind in 0..6 {
-            let white_index = piece_kind * C::AREA + square;
-            let black_index = piece_kind * C::AREA + mirrored_square;
-            let white_value = match &piece {
-                Piece::White(piece) if piece.to_index() as usize == piece_kind + 1 => 1.0,
-                _ => 0.0,
-            } + match &mirrored_piece {
-                Piece::Black(piece) if piece.to_index() as usize == piece_kind + 1 => -1.0,
-                _ => 0.0,
-            };
-            let black_value = match &mirrored_piece {
-                Piece::White(piece) if piece.to_index() as usize == piece_kind + 1 => 1.0,
-                _ => 0.0,
-            } + match &piece {
-                Piece::Black(piece) if piece.to_index() as usize == piece_kind + 1 => -1.0,
-                _ => 0.0,
-            };
-            self.set_input(white_index, white_value).unwrap();
-            self.set_input(black_index, black_value).unwrap();
-        }
+        let mapping = self.mapping;
+        mapping.for_each_square_update(cb, square, |index, value| {
+            if self.inputs[index] != value {
+                self.set_input(index, value).unwrap();
+            }
+        });
     }
 
     pub fn init<C>(&mut self, cb: &Chessboard<C>)
@@ -208,7 +323,7 @@ impl LinearStepper {
         [(); 6 * C::AREA + 1 + STATE_FEATURES]: Sized,
         [(); C::AREA]: Sized,
     {
-        self.inputs = LinearModel::board_to_input(cb).to_vec();
+        self.inputs = self.mapping.board_to_input(cb);
         self.current_score = self.model.forward(self.inputs.as_slice());
         self.changed_squares.clear();
     }
@@ -272,7 +387,7 @@ impl LinearStepper {
     {
         assert_eq!(
             self.inputs.len(),
-            6 * C::AREA + 1 + STATE_FEATURES,
+            self.mapping.input_size::<C>(),
             "Model input size does not match board size"
         );
 
@@ -287,16 +402,15 @@ impl LinearStepper {
         C: BoardConfig + PartialEq + Eq,
         [(); C::AREA]: Sized,
     {
-        let mut state = [0.0; 1 + STATE_FEATURES];
-        state[0] = if cb.current_player() == CurrentPlayer::White {
+        let state_start = self.mapping.piece_planes() * C::AREA;
+        let turn = if cb.current_player() == CurrentPlayer::White {
             1.0
         } else {
             -1.0
         };
-        state[1..].copy_from_slice(&LinearModel::state_features(cb));
-        let state_start = 6 * C::AREA;
-        for (offset, value) in state.into_iter().enumerate() {
-            self.set_input(state_start + offset, value).unwrap();
+        self.set_input(state_start, turn).unwrap();
+        for (offset, value) in LinearModel::state_features(cb).into_iter().enumerate() {
+            self.set_input(state_start + 1 + offset, value).unwrap();
         }
     }
 

@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::board_config::{BoardConfig, RegularVariant};
+use crate::ml::FeatureMapping;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -70,7 +71,8 @@ pub enum GoVariant {
     #[default]
     Regular,
     Perft,
-    Weights,
+    Weights(FeatureMapping),
+    Eval,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,7 +216,22 @@ fn parse_go<C: BoardConfig>(arguments: &[&str]) -> Result<SearchLimits, ParseErr
             "movetime" => {
                 limits.move_time = Some(parse_number(arguments.get(index), "go movetime")?)
             }
-            "weights" => limits.go_variant = GoVariant::Weights,
+            "weights" => {
+                let mapping = match arguments.get(index) {
+                    Some(&"two-colors-per-mapping") => {
+                        index += 1;
+                        FeatureMapping::TwoColorsPerMapping
+                    }
+                    Some(&"color-per-mapping") => {
+                        index += 1;
+                        FeatureMapping::ColorPerMapping
+                    }
+                    _ => FeatureMapping::ColorPerMapping,
+                };
+                limits.go_variant = GoVariant::Weights(mapping);
+            }
+            "perft" => limits.go_variant = GoVariant::Perft,
+            "eval" => limits.go_variant = GoVariant::Eval,
             argument => return invalid(argument, "go"),
         }
 
@@ -345,6 +362,9 @@ fn is_go_keyword(token: &str) -> bool {
             | "mate"
             | "movetime"
             | "infinite"
+            | "weights"
+            | "perft"
+            | "eval"
     )
 }
 
@@ -438,6 +458,38 @@ mod tests {
         assert!(parse("position startpos moves e2e9").is_err());
         assert!(parse("go depth many").is_err());
         assert!(parse("go searchmoves").is_err());
+    }
+
+    #[test]
+    fn parses_weight_export_mapping() {
+        let command = parse("go weights two-colors-per-mapping").unwrap();
+        assert_eq!(
+            command,
+            Some(Command::Go(SearchLimits {
+                go_variant: GoVariant::Weights(FeatureMapping::TwoColorsPerMapping),
+                ..SearchLimits::default()
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_perft_and_eval_commands() {
+        let perft = parse("go perft depth 3").unwrap();
+        assert_eq!(
+            perft,
+            Some(Command::Go(SearchLimits {
+                depth: Some(3),
+                go_variant: GoVariant::Perft,
+                ..SearchLimits::default()
+            }))
+        );
+        assert_eq!(
+            parse("go eval").unwrap(),
+            Some(Command::Go(SearchLimits {
+                go_variant: GoVariant::Eval,
+                ..SearchLimits::default()
+            }))
+        );
     }
 
     #[test]

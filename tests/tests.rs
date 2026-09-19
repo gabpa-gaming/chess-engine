@@ -7,7 +7,7 @@ mod tests {
     use chess_engine::game_controller::GameController;
     use chess_engine::ml::{LinearModel, LinearStepper};
     use chess_engine::chess_move::{MoveFlag, MoveTrait};
-    use super::*; // Ensure this brings GameController and RegularVariant into scope
+    use super::*; 
 
     #[test]
     fn test_standard_start_position() {

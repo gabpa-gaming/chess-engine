@@ -94,6 +94,20 @@ where
     C: BoardConfig + PartialEq + Eq,
     [(); C::AREA]: Sized,
 {
+    fn castling_rank(player: CurrentPlayer) -> usize {
+        match player {
+            CurrentPlayer::White => C::HEIGHT - 1,
+            CurrentPlayer::Black => 0,
+        }
+    }
+
+    fn castling_right_bits(player: CurrentPlayer, kingside: bool) -> u128 {
+        let rank_start = Self::castling_rank(player) * C::WIDTH;
+        let king = rank_start + 4;
+        let rook = if kingside { rank_start + C::WIDTH - 1 } else { rank_start };
+        (1_u128 << king) | (1_u128 << rook)
+    }
+
     pub fn new() -> Chessboard<C> {
         let mut pieces_vec: Vec<PieceType<C>> = Vec::with_capacity(C::AREA);
         for _ in 0..C::AREA {
@@ -117,7 +131,14 @@ where
         }
     }
     pub fn regular_board() -> Chessboard<C> {
-        Chessboard::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
+        let fen = if C::WIDTH == 8 && C::HEIGHT == 8 {
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        } else if C::WIDTH == 10 && C::HEIGHT == 12 {
+            "rnbqkbnbnr/pppppppppp/10/10/10/10/10/10/10/10/PPPPPPPPPP/RNBQKBNBNR w KQkq - 0 1"
+        } else {
+            panic!("No starting position defined for this board size")
+        };
+        Chessboard::from_fen(fen).unwrap()
     }
 
     pub fn is_move_semilegal(&self, move_: C::MoveType) -> MoveLegality
@@ -179,15 +200,28 @@ where
             return Err("Invalid FEN".to_string());
         }
 
-        let mut index = 0;
-
-        for ch in parts[0].chars() {
-            if ch == '/' {
-                continue;
-            }
-            if let Some(digit) = ch.to_digit(10) {
-                index += digit as usize;
-            } else {
+        let ranks: Vec<&str> = parts[0].split('/').collect();
+        if ranks.len() != C::HEIGHT {
+            return Err("Incorrect number of ranks".to_string());
+        }
+        for (rank, row) in ranks.iter().enumerate() {
+            let mut file = 0;
+            let mut chars = row.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch.is_ascii_digit() {
+                    let mut count = ch.to_digit(10).unwrap() as usize;
+                    while let Some(next) = chars.peek().copied() {
+                        if !next.is_ascii_digit() {
+                            break;
+                        }
+                        count = count * 10 + chars.next().unwrap().to_digit(10).unwrap() as usize;
+                    }
+                    file += count;
+                    continue;
+                }
+                if file >= C::WIDTH {
+                    return Err("Rank is too wide".to_string());
+                }
                 let is_white = ch.is_uppercase();
                 let piece = match ch.to_ascii_lowercase() {
                     'p' => PieceType::Pawn(unsafe { std::mem::zeroed() }),
@@ -199,6 +233,7 @@ where
                     _ => return Err("Invalid char".to_string()),
                 };
 
+                let index = rank * C::WIDTH + file;
                 board.pieces[index] = piece;
                 let bit = 1_u128 << index;
                 board.occupancy_board |= bit;
@@ -209,7 +244,10 @@ where
                     board.black_pieces_bitboard |= bit;
                 }
 
-                index += 1;
+                file += 1;
+            }
+            if file != C::WIDTH {
+                return Err("Rank has incorrect width".to_string());
             }
         }
 
@@ -223,10 +261,10 @@ where
         if parts[2] != "-" {
             for ch in parts[2].chars() {
                 match ch {
-                    'K' => board.castling_rights |= (1_u128 << 60) | (1_u128 << 63),
-                    'Q' => board.castling_rights |= (1_u128 << 60) | (1_u128 << 56),
-                    'k' => board.castling_rights |= (1_u128 << 4) | (1_u128 << 7),
-                    'q' => board.castling_rights |= (1_u128 << 4) | (1_u128 << 0),
+                    'K' => board.castling_rights |= Self::castling_right_bits(CurrentPlayer::White, true),
+                    'Q' => board.castling_rights |= Self::castling_right_bits(CurrentPlayer::White, false),
+                    'k' => board.castling_rights |= Self::castling_right_bits(CurrentPlayer::Black, true),
+                    'q' => board.castling_rights |= Self::castling_right_bits(CurrentPlayer::Black, false),
                     _ => {}
                 }
             }
@@ -234,10 +272,12 @@ where
 
         if parts[3] != "-" {
             let bytes = parts[3].as_bytes();
-            if bytes.len() == 2 {
-                let file = (bytes[0] - b'a') as usize;
-                let rank = (8 - (bytes[1] - b'0')) as usize;
-                board.en_passant_square = Some((rank * 8 + file) as u8);
+            if let Some((&file, rank)) = bytes.split_first() {
+                let file = (file - b'a') as usize;
+                let rank = std::str::from_utf8(rank).ok().and_then(|rank| rank.parse::<usize>().ok());
+                if file < C::WIDTH && rank.is_some_and(|rank| (1..=C::HEIGHT).contains(&rank)) {
+                    board.en_passant_square = Some(((C::HEIGHT - rank.unwrap()) * C::WIDTH + file) as u8);
+                }
             }
         }
         if let Some(halfmove_clock) = parts.get(4) {
@@ -395,8 +435,8 @@ where
                 return None;
             }
 
-            let current_file = current % C::HEIGHT as i16;
-            let next_file = next % C::HEIGHT as i16;
+            let current_file = current % C::WIDTH as i16;
+            let next_file = next % C::WIDTH as i16;
             if (current_file - next_file).abs() > 1 {
                 return None;
             }
@@ -495,8 +535,9 @@ where
                         };
                         let mut is_promotion = false;
                         if let PieceType::Pawn(_) = piece.clone() {
-                            if (self.current_player() == CurrentPlayer::Black && to >= 56)
-                                || (self.current_player() == CurrentPlayer::White && to <= 7)
+                            if (self.current_player() == CurrentPlayer::Black
+                                && to / C::WIDTH == C::HEIGHT - 1)
+                                || (self.current_player() == CurrentPlayer::White && to < C::WIDTH)
                             {
                                 is_promotion = true;
                             }
@@ -561,16 +602,13 @@ where
         if (is_checked) {
             return moves;
         }
-        if C::AREA != 64 && C::HEIGHT != 8 && C::WIDTH != 8 {
-            todo!("Implement castling constants for irregular board sizes");
-        }
         match self.current_player() {
             CurrentPlayer::Black => {
                 self.generate_castling_for_rank(&mut moves, 0, self.current_player())
             }
             CurrentPlayer::White => {
-                self.generate_castling_for_rank(&mut moves, 56, self.current_player())
-            } // this offset needs to be calculated based on board size
+                self.generate_castling_for_rank(&mut moves, (C::HEIGHT - 1) * C::WIDTH, self.current_player())
+            }
         }
         moves
     }
@@ -582,40 +620,50 @@ where
     fn generate_castling_for_rank(
         &self,
         moves: &mut Vec<C::MoveType>,
-        offset: u8,
+        offset: usize,
         player: CurrentPlayer,
     ) {
-        let ks_empty = (1_u128 << (5 + offset)) | (1_u128 << (6 + offset));
-        let ks_rights = (1_u128 << (4 + offset)) | (1_u128 << (7 + offset));
+        let king = offset + 4;
+        let kingside_rook = offset + C::WIDTH - 1;
+        let queenside_rook = offset;
+        let king_to_kingside = king + 2;
+        let king_to_queenside = king - 2;
+        let mut ks_empty = 0;
+        for square in king + 1..kingside_rook {
+            ks_empty |= 1_u128 << square;
+        }
+        let ks_rights = (1_u128 << king) | (1_u128 << kingside_rook);
 
         let has_rights = (self.castling_rights & ks_rights) == ks_rights;
         let is_empty = (self.occupancy_board & ks_empty) == 0;
-        let e_safe = !self.is_square_attacked(4 + offset, player.other());
-        let f_safe = !self.is_square_attacked(5 + offset, player.other());
-        let g_safe = !self.is_square_attacked(6 + offset, player.other());
+        let e_safe = !self.is_square_attacked(king as u8, player.other());
+        let f_safe = !self.is_square_attacked((king + 1) as u8, player.other());
+        let g_safe = !self.is_square_attacked(king_to_kingside as u8, player.other());
 
         if has_rights && is_empty && e_safe && f_safe && g_safe {
             moves.push(C::MoveType::new(
-                4 + offset,
-                6 + offset,
+                king as u8,
+                king_to_kingside as u8,
                 MoveFlag::Castling,
                 PieceType::None,
             ));
         }
 
-        let qs_empty =
-            (1_u128 << (1 + offset)) | (1_u128 << (2 + offset)) | (1_u128 << (3 + offset));
-        let qs_rights = (1_u128 << (4 + offset)) | (1_u128 << (0 + offset));
+        let mut qs_empty = 0;
+        for square in queenside_rook + 1..king {
+            qs_empty |= 1_u128 << square;
+        }
+        let qs_rights = (1_u128 << king) | (1_u128 << queenside_rook);
 
         if (self.castling_rights & qs_rights) == qs_rights
             && (self.occupancy_board & qs_empty) == 0
-            && !self.is_square_attacked(4 + offset, player.other())
-            && !self.is_square_attacked(3 + offset, player.other())
-            && !self.is_square_attacked(2 + offset, player.other())
+            && !self.is_square_attacked(king as u8, player.other())
+            && !self.is_square_attacked((king - 1) as u8, player.other())
+            && !self.is_square_attacked(king_to_queenside as u8, player.other())
         {
             moves.push(C::MoveType::new(
-                4 + offset,
-                2 + offset,
+                king as u8,
+                king_to_queenside as u8,
                 MoveFlag::Castling,
                 PieceType::None,
             ));
@@ -829,11 +877,16 @@ where
                 self.pieces[move_.from() as usize] = PieceType::None;
 
                 let is_kingside = move_.to() > move_.from();
-
-                let (rook_from, rook_to) = if is_kingside {
-                    (move_.from() + 3, move_.from() + 1)
+                let rank_start = (move_.from() as usize / C::WIDTH) * C::WIDTH;
+                let rook_from = if is_kingside {
+                    rank_start + C::WIDTH - 1
                 } else {
-                    (move_.from() - 4, move_.from() - 1)
+                    rank_start
+                } as u8;
+                let rook_to = if is_kingside {
+                    move_.from() + 1
+                } else {
+                    move_.from() - 1
                 };
 
                 self.pieces[rook_to as usize] = self.pieces[rook_from as usize].clone();
@@ -860,9 +913,9 @@ where
                     self.turn = CurrentPlayer::White;
                 }
 
-                let rights_to_clear = (1_u128 << move_.from())
-                    | (1_u128 << (move_.from() + 3))
-                    | (1_u128 << (move_.from() - 4));
+                let player = self.turn.other();
+                let rights_to_clear = Self::castling_right_bits(player, true)
+                    | Self::castling_right_bits(player, false);
                 self.castling_rights &= !rights_to_clear;
 
                 self.halfmove_clock += 1;
@@ -982,13 +1035,14 @@ where
                 self.pieces[from as usize] = self.pieces[to as usize].clone();
                 self.pieces[to as usize] = PieceType::None;
 
-                let (rook_from, rook_to) = match to {
-                    62 => (63, 61), // White Kingside
-                    58 => (56, 59), // White Queenside
-                    6 => (7, 5),    // Black Kingside
-                    2 => (0, 3),    // Black Queenside
-                    _ => unreachable!("Invalid castling destination"),
-                };
+                let is_kingside = to > from;
+                let rank_start = (from as usize / C::WIDTH) * C::WIDTH;
+                let rook_from = if is_kingside {
+                    rank_start + C::WIDTH - 1
+                } else {
+                    rank_start
+                } as u8;
+                let rook_to = if is_kingside { from + 1 } else { from - 1 };
 
                 self.pieces[rook_from as usize] = self.pieces[rook_to as usize].clone();
                 self.pieces[rook_to as usize] = PieceType::None;
@@ -1118,11 +1172,14 @@ where
         }
 
         if move_.flag() == MoveFlag::Castling {
-            let (rook_from, rook_to) = if move_.to() > move_.from() {
-                (move_.from() + 3, move_.from() + 1)
+            let is_kingside = move_.to() > move_.from();
+            let rank_start = (move_.from() as usize / C::WIDTH) * C::WIDTH;
+            let rook_from = if is_kingside {
+                rank_start + C::WIDTH - 1
             } else {
-                (move_.from() - 4, move_.from() - 1)
-            };
+                rank_start
+            } as u8;
+            let rook_to = if is_kingside { move_.from() + 1 } else { move_.from() - 1 };
             let rook = &self.pieces[rook_to as usize];
             self.zobrist ^= Self::piece_zobrist_key(rook, mover, rook_from);
             self.zobrist ^= Self::piece_zobrist_key(rook, mover, rook_to);

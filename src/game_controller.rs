@@ -4,13 +4,14 @@ use crate::chess_engine::ChessEngine;
 use crate::chess_engine::Engine;
 use crate::chess_move::{MoveFlag, MoveTrait};
 use crate::eval::{DeadSimpleEvaluator, LayeredMLEvaluator, MLEvaluator};
-use crate::ml::LinearModel;
+use crate::ml::MLModel;
 use crate::piece::{Piece, PieceType};
 use crate::uci::GoVariant;
 use anyhow::anyhow;
 use std::fmt::Debug;
 use std::io;
 use std::io::BufRead;
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct GameSettings {
@@ -124,7 +125,7 @@ where
 
         if input == "O-O" || input == "O-O-O" {
             let offset = if self.chessboard.current_player() == CurrentPlayer::White {
-                56
+                (C::HEIGHT - 1) * C::WIDTH
             } else {
                 0
             };
@@ -134,12 +135,12 @@ where
                 (4 + offset, 2 + offset) // e to c
             };
 
-            let castle_move = C::MoveType::new(from_sq, to_sq, MoveFlag::Castling, PieceType::None);
+            let castle_move = C::MoveType::new(from_sq as u8, to_sq as u8, MoveFlag::Castling, PieceType::None);
 
             let generated = self.chessboard.generate_moves().unwrap_or(Vec::new());
             if generated
                 .iter()
-                .any(|m| m.from() == from_sq && m.to() == to_sq)
+                .any(|m| m.from() == from_sq as u8 && m.to() == to_sq as u8)
             {
                 return Ok(castle_move);
             } else {
@@ -185,16 +186,30 @@ where
             return Err(format!("Invalid chess notation: too short ('{}')", input));
         }
 
-        let dest_file = chars[chars.len() - 2];
-        let dest_rank = chars[chars.len() - 1];
+        let rank_start = cleaned
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| character.is_ascii_digit())
+            .last()
+            .map(|(index, _)| index)
+            .ok_or_else(|| "Invalid chess notation: invalid destination rank".to_string())?;
+        let dest_file = cleaned[..rank_start]
+            .chars()
+            .last()
+            .ok_or_else(|| "Invalid chess notation: invalid destination file".to_string())?;
+        let dest_rank_num = cleaned[rank_start..]
+            .parse::<usize>()
+            .map_err(|_| "Invalid chess notation: invalid destination rank".to_string())?;
 
-        if !(dest_file >= 'a' && dest_file <= 'h') || !(dest_rank >= '1' && dest_rank <= '8') {
+        if !(('a'..='z').contains(&dest_file))
+            || (dest_file as usize - 'a' as usize) >= C::WIDTH
+            || !(1..=C::HEIGHT).contains(&dest_rank_num)
+        {
             return Err("Invalid chess notation: invalid destination square".to_string());
         }
 
-        let dest_rank_num = dest_rank.to_digit(10).unwrap() as usize;
         let dest_file_num = (dest_file as usize) - ('a' as usize);
-        let dest_idx = ((8 - dest_rank_num) * C::WIDTH) + dest_file_num;
+        let dest_idx = ((C::HEIGHT - dest_rank_num) * C::WIDTH) + dest_file_num;
 
         let piece_char = if chars[0].is_lowercase() {
             'P'
@@ -259,10 +274,11 @@ where
             MoveFlag::Quiet
         };
 
+        let destination_start = rank_start - 1;
         let has_disambiguator = if piece_char == 'P' {
-            chars.len() >= 3
+            destination_start > 0
         } else {
-            chars.len() >= 4
+            destination_start > 1
         };
 
         if has_disambiguator {
@@ -277,10 +293,10 @@ where
                     let candidate_file = candidate % C::WIDTH;
                     let target_file = (disambiguator as usize) - ('a' as usize);
                     candidate_file == target_file
-                } else if disambiguator >= '1' && disambiguator <= '8' {
+                } else if disambiguator.is_ascii_digit() {
                     let candidate_rank = candidate / C::WIDTH;
                     let target_rank_num = disambiguator.to_digit(10).unwrap() as usize;
-                    let target_rank = 8 - target_rank_num;
+                    let target_rank = C::HEIGHT - target_rank_num;
                     candidate_rank == target_rank
                 } else {
                     false
@@ -315,9 +331,7 @@ where
         let file = pos % C::WIDTH as u16;
 
         let file_char = (b'a' + file as u8) as char;
-        let rank_char = (b'8' - rank as u8) as char;
-
-        format!("{}{}", file_char, rank_char)
+        format!("{}{}", file_char, C::HEIGHT - rank as usize)
     }
 
     pub fn chessboard(&self) -> &Chessboard<C> {
@@ -344,7 +358,7 @@ where
                     {
                         let board = self.chessboard_mut();
                         board.apply_move(*m).unwrap();
-                        Chessboard::display_board(&board.get_pieces(), 8);
+                        Chessboard::display_board(&board.get_pieces(), C::WIDTH);
                         let mov_c = self
                             .chessboard_mut()
                             .generate_moves()
@@ -369,7 +383,7 @@ where
             }
             if !speed {
                 let board = self.chessboard_mut();
-                Chessboard::display_board(&board.get_pieces(), 8);
+                Chessboard::display_board(&board.get_pieces(), C::WIDTH);
             }
             count += self.perf_mode(depth - 1, speed);
             self.chessboard_mut().undo_move();
@@ -384,8 +398,8 @@ impl GameController<RegularVariant> {
             "simple" => Ok(Box::new(Engine::new(DeadSimpleEvaluator {}))),
             e if e.starts_with("ml") => {
                 if let Some(inner) = e.strip_prefix("ml(").and_then(|x| x.strip_suffix(')')) {
-                    Ok(Box::new(Engine::new(MLEvaluator::new(
-                        LinearModel::load_model(inner)?,
+                    Ok(Box::new(Engine::new(MLEvaluator::from_model(
+                        MLModel::load_model(inner)?,
                     ))))
                 } else {
                     Err(anyhow!("Incorrect format. Try: ml(path)"))
@@ -460,18 +474,42 @@ impl GameController<RegularVariant> {
                     }
                 }
                 crate::uci::Command::Go(mut limits) => {
-                    if limits.go_variant == GoVariant::Weights {
-                        let inputs = LinearModel::board_to_input(&game.chessboard());
+                    if let GoVariant::Weights(mapping) = limits.go_variant {
+                        let inputs = mapping.board_to_input(&game.chessboard());
                         println!(
                             "{}",
                             serde_json::to_string(inputs.as_slice()).expect("Serialization error.")
                         );
                         continue;
                     }
+                    if limits.go_variant == GoVariant::Perft {
+                        let Some(depth) = limits.depth else {
+                            eprintln!("UCI perft error: provide a depth (go perft depth N)");
+                            continue;
+                        };
+                        let started = Instant::now();
+                        let nodes = game.perf_mode(depth as usize, true);
+                        let elapsed = started.elapsed();
+                        let time_ms = elapsed.as_millis();
+                        let nps = if elapsed.is_zero() {
+                            0
+                        } else {
+                            (nodes as f64 / elapsed.as_secs_f64()) as u64
+                        };
+                        println!("info depth {depth} nodes {nodes} time {time_ms} nps {nps}");
+                        println!("bestmove 0000");
+                        continue;
+                    }
+                    if limits.go_variant == GoVariant::Eval {
+                        let score = engine.evaluate(game.chessboard());
+                        println!("info score cp {}", score.round() as i32);
+                        println!("bestmove 0000");
+                        continue;
+                    }
                     let depth = limits.depth.unwrap_or(settings.search_max_depth);
                     limits.depth = Some(depth);
                     engine.search(game.chessboard(), limits);
-                    if let Some(best_move) = engine.get_next_move(){
+                    if let Some(best_move) = engine.get_next_move() {
                         let uci_mov = Self::move_to_uci(&best_move);
                         println!("bestmove {}", uci_mov);
                     } else {
@@ -494,7 +532,7 @@ impl GameController<RegularVariant> {
                                 Ok(next_engine) => {
                                     engine = next_engine;
                                     settings.evaluator_name = value;
-                                },
+                                }
                                 Err(error) => {
                                     eprintln!("UCI option error: {error}");
                                 }

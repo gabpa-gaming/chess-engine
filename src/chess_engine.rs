@@ -33,6 +33,7 @@ where
     fn search(&mut self, cb: &Chessboard<C>, limits: SearchLimits);
     fn get_nodes_searched(&self) -> u64;
     fn get_score(&self) -> f32;
+    fn evaluate(&mut self, cb: &Chessboard<C>) -> f32;
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +114,11 @@ where
                     }
                 }
         }
+    }
+
+    fn evaluate(&mut self, cb: &Chessboard<C>) -> f32 {
+        self.evaluator.init(cb);
+        self.evaluator.evaluate(cb)
     }
     
     fn get_next_move(&self) -> Option<C::MoveType>

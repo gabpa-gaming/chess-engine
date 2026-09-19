@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 
 use crate::board_config::{BoardConfig, RegularVariant};
 use crate::chess_board::Chessboard;
-use crate::ml::{LinearModel, LinearStepper, SimpleLayeredNetworkShape};
+use crate::ml::{LinearModel, LinearStepper, MLModel, SimpleLayeredNetworkShape};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -49,6 +49,13 @@ impl<C> MLEvaluator<C> {
             _phantom_data: PhantomData,
         }
     }
+
+    pub fn from_model(model: MLModel) -> Self {
+        Self {
+            stepper: LinearStepper::from_ml_model(model),
+            _phantom_data: PhantomData,
+        }
+    }
 }
 
 impl<C> Evaluator<C> for MLEvaluator<C>
@@ -81,40 +88,49 @@ pub struct LayeredMLEvaluator<C> {
     hidden_model2: [LinearModel; 32],
     output: LinearModel,
     cached_output: f32,
-    _phantom_data: PhantomData<C>
+    _phantom_data: PhantomData<C>,
 }
 
 impl<C> LayeredMLEvaluator<C> {
     pub fn new(model: SimpleLayeredNetworkShape) -> Result<Self, Error> {
         Ok(Self {
             main_model: LinearStepper::new(model.main),
-            hidden_model1: model.hidden1.unwrap_or_default()
+            hidden_model1: model
+                .hidden1
+                .unwrap_or_default()
                 .into_iter()
                 .map(|h| LinearStepper::new(h))
                 .collect::<Vec<LinearStepper>>()
                 .try_into()
-                .map_err(|v: Vec<LinearStepper>| anyhow!("Expected 64 elements, found {}", v.len()))?,
-            hidden_model2: model.hidden2.unwrap_or_default()
-                            .into_iter()
-                            .collect::<Vec<LinearModel>>()
-                            .try_into()
-                            .map_err(|v: Vec<LinearModel>| anyhow!("Expected 32 elements, found {}", v.len()))?,
+                .map_err(|v: Vec<LinearStepper>| {
+                    anyhow!("Expected 64 elements, found {}", v.len())
+                })?,
+            hidden_model2: model
+                .hidden2
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<LinearModel>>()
+                .try_into()
+                .map_err(|v: Vec<LinearModel>| {
+                    anyhow!("Expected 32 elements, found {}", v.len())
+                })?,
             output: model.output.expect("Expected a model, found none"),
             cached_output: 0.0,
             _phantom_data: PhantomData,
         })
     }
-    
+
     pub fn load_model(path: &str) -> anyhow::Result<LayeredMLEvaluator<C>, anyhow::Error> {
         let json = std::fs::read_to_string(path)?;
-        let shape: SimpleLayeredNetworkShape = serde_json::from_str(&json).map_err(|_| anyhow::anyhow!("Couldn't deserialize json model."))?;
+        let shape: SimpleLayeredNetworkShape = serde_json::from_str(&json)
+            .map_err(|_| anyhow::anyhow!("Couldn't deserialize json model."))?;
         LayeredMLEvaluator::<C>::new(shape)
     }
-    
+
     fn softsign(x: f32) -> f32 {
         x / (1.0 + x.abs())
     }
-    
+
     pub fn evaluate_layers(&self) -> f32 {
         let mut layer1_outputs = [0.0; 64];
         for node in self.hidden_model1.iter().enumerate() {
@@ -124,7 +140,7 @@ impl<C> LayeredMLEvaluator<C> {
         for node in self.hidden_model2.iter().enumerate() {
             layer2_outputs[node.0] = Self::softsign(node.1.forward(&layer1_outputs));
         }
-        
+
         self.output.forward(&layer2_outputs)
     }
 }
