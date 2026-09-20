@@ -13,23 +13,29 @@ pub trait MoveTrait<C: BoardConfig + Clone + Debug>
 where
     [(); C::AREA]: Sized,
 {
-    fn new(from: u8, to: u8, flag: MoveFlag, promotion: PieceType<C>) -> Self;
-    fn from(&self) -> u8;
-    fn to(&self) -> u8;
+    fn new(from: C::Square, to: C::Square, flag: MoveFlag, promotion: PieceType<C>) -> Self;
+    fn from(&self) -> C::Square;
+    fn to(&self) -> C::Square;
     fn flag(&self) -> MoveFlag;
     fn promotion(&self) -> PieceType<C>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BigMove {
-    pub from: u8,
-    pub to: u8,
+pub struct BigMove<C: BoardConfig = BigVariant>
+where
+    [(); C::AREA]: Sized,
+{
+    pub from: C::Square,
+    pub to: C::Square,
     pub flag: MoveFlag,
-    pub promotion: PieceType<BigVariant>,
+    pub promotion: PieceType<C>,
 }
 
-impl MoveTrait<BigVariant> for BigMove {
-    fn new(from: u8, to: u8, flag: MoveFlag, promotion: PieceType<BigVariant>) -> Self {
+impl<C: BoardConfig> MoveTrait<C> for BigMove<C>
+where
+    [(); C::AREA]: Sized,
+{
+    fn new(from: C::Square, to: C::Square, flag: MoveFlag, promotion: PieceType<C>) -> Self {
         Self {
             from,
             to,
@@ -38,11 +44,11 @@ impl MoveTrait<BigVariant> for BigMove {
         }
     }
 
-    fn from(&self) -> u8 {
+    fn from(&self) -> C::Square {
         self.from
     }
 
-    fn to(&self) -> u8 {
+    fn to(&self) -> C::Square {
         self.to
     }
 
@@ -50,8 +56,8 @@ impl MoveTrait<BigVariant> for BigMove {
         self.flag
     }
 
-    fn promotion(&self) -> PieceType<BigVariant> {
-        self.promotion
+    fn promotion(&self) -> PieceType<C> {
+        self.promotion.clone()
     }
 }
 

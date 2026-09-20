@@ -8,11 +8,12 @@ use crate::knight::Knight;
 use crate::pawn::Pawn;
 use crate::queen::Queen;
 use crate::rook::Rook;
+use crate::bitboard::Bitboard;
 
-pub trait PieceBehavior {
-    fn get_move_bit_board(&self, pos: u8, occupancy_bitboard: u128, color: CurrentPlayer) -> u128;
+pub trait PieceBehavior<C: BoardConfig> {
+    fn get_move_bit_board(&self, pos: C::Square, occupancy_bitboard: C::Bitboard, color: CurrentPlayer) -> C::Bitboard;
 
-    fn get_attack_bitboard(&self, pos: u8, occupancy_bitboard: u128, color: CurrentPlayer) -> u128;
+    fn get_attack_bitboard(&self, pos: C::Square, occupancy_bitboard: C::Bitboard, color: CurrentPlayer) -> C::Bitboard;
 
     fn is_slider(&self) -> bool;
 
@@ -83,9 +84,9 @@ where
         }
     }
 
-    pub fn get_move_bitboard(&self, at: u8, occupancy: u128, color: CurrentPlayer) -> u128 {
+    pub fn get_move_bitboard(&self, at: C::Square, occupancy: C::Bitboard, color: CurrentPlayer) -> C::Bitboard {
         match self {
-            Self::None => 0,
+            Self::None => C::Bitboard::ZERO,
             Self::Pawn(pawn) => pawn.get_move_bit_board(at, occupancy, color),
             Self::Rook(rook) => rook.get_move_bit_board(at, occupancy, color),
             Self::Bishop(bishop) => bishop.get_move_bit_board(at, occupancy, color),
@@ -95,9 +96,9 @@ where
         }
     }
 
-    pub fn get_attack_bitboard(&self, at: u8, occupancy: u128, color: CurrentPlayer) -> u128 {
+    pub fn get_attack_bitboard(&self, at: C::Square, occupancy: C::Bitboard, color: CurrentPlayer) -> C::Bitboard {
         match self {
-            Self::None => 0,
+            Self::None => C::Bitboard::ZERO,
             Self::Pawn(pawn) => pawn.get_attack_bitboard(at, occupancy, color),
             Self::Rook(rook) => rook.get_attack_bitboard(at, occupancy, color),
             Self::Bishop(bishop) => bishop.get_attack_bitboard(at, occupancy, color),

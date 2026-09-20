@@ -1,4 +1,5 @@
 use crate::board_config::BoardConfig;
+use crate::bitboard::{Bitboard, BitboardIndex};
 use crate::chess_board::{Chessboard, CurrentPlayer};
 use crate::chess_move::{MoveFlag, MoveTrait};
 use crate::piece::Piece;
@@ -195,15 +196,15 @@ impl LinearModel {
         let rights = cb.castling_rights();
         let white_start = (C::HEIGHT - 1) * C::WIDTH;
         let black_start = 0;
-        input[0] = ((rights & ((1_u128 << (white_start + 4)) | (1_u128 << (white_start + C::WIDTH - 1)))) != 0) as u8 as f32;
-        input[1] = ((rights & ((1_u128 << (white_start + 4)) | (1_u128 << white_start))) != 0) as u8 as f32;
-        input[2] = ((rights & ((1_u128 << (black_start + 4)) | (1_u128 << (black_start + C::WIDTH - 1)))) != 0) as u8 as f32;
-        input[3] = ((rights & ((1_u128 << (black_start + 4)) | (1_u128 << black_start))) != 0) as u8 as f32;
+        input[0] = (rights.has(C::Square::from_usize(white_start + 4)) && rights.has(C::Square::from_usize(white_start + C::WIDTH - 1))) as u8 as f32;
+        input[1] = (rights.has(C::Square::from_usize(white_start + 4)) && rights.has(C::Square::from_usize(white_start))) as u8 as f32;
+        input[2] = (rights.has(C::Square::from_usize(black_start + 4)) && rights.has(C::Square::from_usize(black_start + C::WIDTH - 1))) as u8 as f32;
+        input[3] = (rights.has(C::Square::from_usize(black_start + 4)) && rights.has(C::Square::from_usize(black_start))) as u8 as f32;
 
         if C::WIDTH == 8 && C::HEIGHT == 8 {
             if let Some(square) = cb.en_passant_square() {
-                let rank = square as usize / C::WIDTH;
-                let file = square as usize % C::WIDTH;
+                let rank = square.as_usize() / C::WIDTH;
+                let file = square.as_usize() % C::WIDTH;
                 let index = match rank {
                     2 => Some(file),
                     5 => Some(8 + file),
@@ -354,18 +355,18 @@ impl LinearStepper {
             .last_move()
             .expect("Stepper requires a board with an applied move")
             .moved();
-        let mut squares = vec![move_.from() as usize, move_.to() as usize];
+        let mut squares = vec![move_.from().as_usize(), move_.to().as_usize()];
         match move_.flag() {
             MoveFlag::EnPassant => squares.push(if cb.current_player() == CurrentPlayer::Black {
-                move_.to() as usize + C::WIDTH
+                move_.to().as_usize() + C::WIDTH
             } else {
-                move_.to() as usize - C::WIDTH
+                move_.to().as_usize() - C::WIDTH
             }),
             MoveFlag::Castling => {
                 if move_.to() > move_.from() {
-                    squares.extend([(move_.from() + 3) as usize, (move_.from() + 1) as usize]);
+                    squares.extend([move_.from().as_usize() + 3, move_.from().as_usize() + 1]);
                 } else {
-                    squares.extend([(move_.from() - 4) as usize, (move_.from() - 1) as usize]);
+                    squares.extend([move_.from().as_usize() - 4, move_.from().as_usize() - 1]);
                 }
             }
             _ => {}

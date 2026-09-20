@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use crate::board_config::BoardConfig;
 use crate::chess_board::CurrentPlayer;
 use crate::piece::PieceBehavior;
+use crate::bitboard::{Bitboard, BitboardIndex};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Rook<C: BoardConfig>
 where
@@ -32,21 +33,21 @@ where
     pub const STATIC_VECTORS_8X8: [i8; 4] = [-8, 8, 1, -1];
 }
 
-impl<C: BoardConfig> PieceBehavior for Rook<C>
+impl<C: BoardConfig> PieceBehavior<C> for Rook<C>
 where
     [(); C::AREA]: Sized,
 {
-    fn get_move_bit_board(&self, pos: u8, occupancy: u128, color_: CurrentPlayer) -> u128 {
-        let rank = pos as usize / C::WIDTH;
-        let file = pos as usize % C::WIDTH;
+    fn get_move_bit_board(&self, pos: C::Square, occupancy: C::Bitboard, _color: CurrentPlayer) -> C::Bitboard {
+        let rank = pos.as_usize() / C::WIDTH;
+        let file = pos.as_usize() % C::WIDTH;
 
-        let mut moves: u128 = 0;
+        let mut moves = C::Bitboard::ZERO;
 
         let mut r = rank + 1;
         while r < C::HEIGHT {
             let idx = r * C::WIDTH + file;
-            moves |= 1 << idx;
-            if (occupancy >> idx) & 1 == 1 {
+            moves |= C::Bitboard::bit(C::Square::from_usize(idx));
+            if occupancy.has(C::Square::from_usize(idx)) {
                 break;
             }
             r += 1;
@@ -55,8 +56,8 @@ where
         let mut r = rank as i32 - 1;
         while r >= 0 {
             let idx = (r as usize) * C::WIDTH + file;
-            moves |= 1 << idx;
-            if (occupancy >> idx) & 1 == 1 {
+            moves |= C::Bitboard::bit(C::Square::from_usize(idx));
+            if occupancy.has(C::Square::from_usize(idx)) {
                 break;
             }
             r -= 1;
@@ -65,8 +66,8 @@ where
         let mut f = file + 1;
         while f < C::WIDTH {
             let idx = rank * C::WIDTH + f;
-            moves |= 1 << idx;
-            if (occupancy >> idx) & 1 == 1 {
+            moves |= C::Bitboard::bit(C::Square::from_usize(idx));
+            if occupancy.has(C::Square::from_usize(idx)) {
                 break;
             }
             f += 1;
@@ -75,8 +76,8 @@ where
         let mut f = file as i32 - 1;
         while f >= 0 {
             let idx = rank * C::WIDTH + (f as usize);
-            moves |= 1 << idx;
-            if (occupancy >> idx) & 1 == 1 {
+            moves |= C::Bitboard::bit(C::Square::from_usize(idx));
+            if occupancy.has(C::Square::from_usize(idx)) {
                 break;
             }
             f -= 1;
@@ -85,7 +86,7 @@ where
         moves
     }
 
-    fn get_attack_bitboard(&self, pos: u8, occupancy: u128, _color: CurrentPlayer) -> u128 {
+    fn get_attack_bitboard(&self, pos: C::Square, occupancy: C::Bitboard, _color: CurrentPlayer) -> C::Bitboard {
         self.get_move_bit_board(pos, occupancy, _color)
     }
 

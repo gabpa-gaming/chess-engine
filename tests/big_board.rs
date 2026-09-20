@@ -1,7 +1,8 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
-use chess_engine::board_config::{BigVariant, BoardConfig};
+use chess_engine::bitboard::Bitboard;
+use chess_engine::board_config::{BigVariant, BoardConfig, HundredVariant, HugeVariant};
 use chess_engine::chess_board::Chessboard;
 use chess_engine::chess_move::{MoveFlag, MoveTrait};
 use chess_engine::piece::Piece;
@@ -50,4 +51,29 @@ fn big_board_pawns_promote_on_the_first_and_last_ranks() {
     .filter(|move_| move_.flag() == MoveFlag::Promotion)
     .count();
     assert_eq!(promotions, 4);
+}
+
+#[test]
+fn huge_board_castling_moves_outer_rook_and_undoes() {
+    let mut board = Chessboard::<HugeVariant>::from_fen(
+        "4k15/20/20/20/20/20/20/20/20/20/20/20/20/20/20/20/20/20/20/R3K14R w KQkq - 0 1",
+    )
+    .unwrap();
+    let original = board.clone();
+    let castle = match board.generate_moves() { Ok(moves) => moves, Err(_) => panic!("expected legal moves") }.into_iter()
+        .find(|move_| move_.flag() == MoveFlag::Castling && move_.to() > move_.from())
+        .unwrap();
+    board.apply_move(castle).unwrap();
+    assert!(matches!(board.piece_at(386), Piece::White(_)));
+    assert!(matches!(board.piece_at(385), Piece::White(_)));
+    board.undo_move();
+    assert_eq!(board, original);
+}
+
+#[test]
+fn hundred_board_uses_multiword_storage_and_u16_squares() {
+    assert_eq!(HundredVariant::AREA, 10_000);
+    let bit = <HundredVariant as BoardConfig>::Bitboard::bit(9_999);
+    assert!(bit.has(9_999));
+    assert_eq!(bit.first_set(), Some(9_999));
 }

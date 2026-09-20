@@ -1,4 +1,5 @@
 use crate::board_config::{BoardConfig, RegularVariant};
+use crate::bitboard::BitboardIndex;
 use crate::chess_board::{Chessboard, CurrentPlayer, MoveLegality};
 use crate::chess_engine::ChessEngine;
 use crate::chess_engine::Engine;
@@ -93,8 +94,8 @@ where
             .ok()?
             .into_iter()
             .find(|move_| {
-                move_.from() == uci_move.from.0
-                    && move_.to() == uci_move.to.0
+                move_.from().as_usize() == uci_move.from.0 as usize
+                    && move_.to().as_usize() == uci_move.to.0 as usize
                     && match move_.flag() {
                         MoveFlag::Promotion => matches!(
                             (uci_move.promotion, move_.promotion()),
@@ -114,9 +115,9 @@ where
             })
     }
 
-    fn square_to_uci(square: u8) -> String {
-        let file = (square as usize) % C::WIDTH;
-        let rank = C::HEIGHT - (square as usize / C::WIDTH);
+    fn square_to_uci(square: C::Square) -> String {
+        let file = square.as_usize() % C::WIDTH;
+        let rank = C::HEIGHT - (square.as_usize() / C::WIDTH);
         format!("{}{}", (b'a' + file as u8) as char, rank)
     }
 
@@ -135,12 +136,12 @@ where
                 (4 + offset, 2 + offset) // e to c
             };
 
-            let castle_move = C::MoveType::new(from_sq as u8, to_sq as u8, MoveFlag::Castling, PieceType::None);
+            let castle_move = C::MoveType::new(C::Square::from_usize(from_sq), C::Square::from_usize(to_sq), MoveFlag::Castling, PieceType::None);
 
             let generated = self.chessboard.generate_moves().unwrap_or(Vec::new());
             if generated
                 .iter()
-                .any(|m| m.from() == from_sq as u8 && m.to() == to_sq as u8)
+                .any(|m| m.from().as_usize() == from_sq && m.to().as_usize() == to_sq)
             {
                 return Ok(castle_move);
             } else {
@@ -248,7 +249,7 @@ where
         for candidate in &candidates {
             if let Some(valid_move) = generated_moves
                 .iter()
-                .find(|m| m.from() == *candidate as u8 && m.to() == dest_idx as u8)
+                .find(|m| m.from().as_usize() == *candidate && m.to().as_usize() == dest_idx)
             {
                 if valid_move.flag() == MoveFlag::EnPassant {
                     is_ep = true;
@@ -319,8 +320,8 @@ where
         }
 
         Ok(C::MoveType::new(
-            valid_moves[0] as u8,
-            dest_idx as u8,
+            C::Square::from_usize(valid_moves[0]),
+            C::Square::from_usize(dest_idx),
             final_flag,
             promotion_piece,
         ))

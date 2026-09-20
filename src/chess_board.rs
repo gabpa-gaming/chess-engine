@@ -1,4 +1,5 @@
 use crate::bishop::Bishop;
+use crate::bitboard::{Bitboard, BitboardIndex};
 use crate::board_config::{BoardConfig, RegularVariant};
 use crate::chess_move::MoveFlag::Promotion;
 use crate::chess_move::{MoveFlag, MoveTrait};
@@ -38,9 +39,9 @@ where
     [(); C::AREA]: Sized,
 {
     moved: C::MoveType,
-    last_castling_data: u128,
+    last_castling_data: C::Bitboard,
     captured: PieceType<C>,
-    en_passant: Option<u8>,
+    en_passant: Option<C::Square>,
     halfmove_clock: u8,
     zobrist: u64,
 }
@@ -60,11 +61,11 @@ where
     [(); C::AREA]: Sized,
 {
     pieces: [PieceType<C>; C::AREA],
-    occupancy_board: u128,
-    black_pieces_bitboard: u128,
-    white_pieces_bitboard: u128,
-    castling_rights: u128,
-    en_passant_square: Option<u8>,
+    occupancy_board: C::Bitboard,
+    black_pieces_bitboard: C::Bitboard,
+    white_pieces_bitboard: C::Bitboard,
+    castling_rights: C::Bitboard,
+    en_passant_square: Option<C::Square>,
     halfmove_clock: u8,
     turn: CurrentPlayer,
     zobrist: u64,
@@ -101,11 +102,11 @@ where
         }
     }
 
-    fn castling_right_bits(player: CurrentPlayer, kingside: bool) -> u128 {
+    fn castling_right_bits(player: CurrentPlayer, kingside: bool) -> C::Bitboard {
         let rank_start = Self::castling_rank(player) * C::WIDTH;
         let king = rank_start + 4;
         let rook = if kingside { rank_start + C::WIDTH - 1 } else { rank_start };
-        (1_u128 << king) | (1_u128 << rook)
+        C::Bitboard::bit(C::Square::from_usize(king)) | C::Bitboard::bit(C::Square::from_usize(rook))
     }
 
     pub fn new() -> Chessboard<C> {
@@ -120,10 +121,10 @@ where
         Self {
             pieces,
             turn: CurrentPlayer::White,
-            occupancy_board: 0,
-            black_pieces_bitboard: 0,
-            white_pieces_bitboard: 0,
-            castling_rights: 0,
+            occupancy_board: C::Bitboard::ZERO,
+            black_pieces_bitboard: C::Bitboard::ZERO,
+            white_pieces_bitboard: C::Bitboard::ZERO,
+            castling_rights: C::Bitboard::ZERO,
             en_passant_square: None,
             halfmove_clock: 0,
             zobrist: 0,
@@ -144,7 +145,7 @@ where
     pub fn is_move_semilegal(&self, move_: C::MoveType) -> MoveLegality
     where
             {
-        match self.pieces[move_.from() as usize].clone() {
+        match self.pieces[move_.from().as_usize()].clone() {
             PieceType::<C>::None => MoveLegality::IllegalOther,
             piece => {
                 //room for optimization
@@ -163,7 +164,7 @@ where
                         self.current_player(),
                     ) & enemy_board);
 
-                if (move_bitboard & (1 << move_.to())) > 0 {
+                if move_bitboard.has(move_.to()) {
                     return MoveLegality::SemiLegal;
                 }
                 MoveLegality::IllegalOther
@@ -187,7 +188,7 @@ where
     pub fn is_king_checked(&self, current_player: CurrentPlayer) -> bool {
         let king_pos = self.get_king_position(current_player);
         let enemy_attacks = self.get_attack_bitboard(current_player.other());
-        (enemy_attacks >> king_pos) & 1 > 0
+        enemy_attacks.has(king_pos)
     }
 
     pub fn from_fen(fen: &str) -> Result<Self, String>
@@ -235,7 +236,7 @@ where
 
                 let index = rank * C::WIDTH + file;
                 board.pieces[index] = piece;
-                let bit = 1_u128 << index;
+                let bit = C::Bitboard::bit(C::Square::from_usize(index));
                 board.occupancy_board |= bit;
 
                 if is_white {
@@ -257,7 +258,7 @@ where
             _ => return Err("Invalid color".to_string()),
         };
 
-        board.castling_rights = 0;
+        board.castling_rights = C::Bitboard::ZERO;
         if parts[2] != "-" {
             for ch in parts[2].chars() {
                 match ch {
@@ -276,7 +277,7 @@ where
                 let file = (file - b'a') as usize;
                 let rank = std::str::from_utf8(rank).ok().and_then(|rank| rank.parse::<usize>().ok());
                 if file < C::WIDTH && rank.is_some_and(|rank| (1..=C::HEIGHT).contains(&rank)) {
-                    board.en_passant_square = Some(((C::HEIGHT - rank.unwrap()) * C::WIDTH + file) as u8);
+                    board.en_passant_square = Some(C::Square::from_usize((C::HEIGHT - rank.unwrap()) * C::WIDTH + file));
                 }
             }
         }
@@ -289,17 +290,17 @@ where
         Ok(board)
     }
 
-    pub fn get_king_position(&self, player: CurrentPlayer) -> u8 {
+    pub fn get_king_position(&self, player: CurrentPlayer) -> C::Square {
         let mut king_pos = 0;
         loop {
             match self.pieces[king_pos].clone() {
                 PieceType::King(_) => {
                     if player == CurrentPlayer::White
-                        && (self.white_pieces_bitboard & (1 << king_pos)) != 0
+                        && self.white_pieces_bitboard.has(C::Square::from_usize(king_pos))
                     {
                         break;
                     } else if player == CurrentPlayer::Black
-                        && (self.black_pieces_bitboard & (1 << king_pos)) != 0
+                        && self.black_pieces_bitboard.has(C::Square::from_usize(king_pos))
                     {
                         break;
                     }
@@ -321,11 +322,11 @@ where
                 panic!("No king of color on the board")
             }
         }
-        king_pos as u8
+        C::Square::from_usize(king_pos)
     }
 
-    pub fn find_pins(&self, player: CurrentPlayer) -> u128 {
-        let mut pinned_pieces = 0;
+    pub fn find_pins(&self, player: CurrentPlayer) -> C::Bitboard {
+        let mut pinned_pieces = C::Bitboard::ZERO;
 
         let attack_vectors = crate::piece::get_all_possible_attack_vectors();
         let king_pos = self.get_king_position(player.clone());
@@ -340,72 +341,72 @@ where
             self.white_pieces_bitboard
         };
         for attack in attack_vectors {
-            let res = self.raycast(*attack, king_pos, C::AREA as u8);
-            if res.is_none_or(|res| current_player_bitboard & (1 << res) == 0) {
+            let res = self.raycast(*attack, king_pos, C::AREA);
+            if res.is_none_or(|res| !current_player_bitboard.has(res)) {
                 continue;
             }
             let res = res.unwrap();
-            let pinner = self.raycast(*attack, res, C::AREA as u8);
+            let pinner = self.raycast(*attack, res, C::AREA);
             if pinner.is_none_or(|pinner| {
-                opponent_player_bitboard & (1 << pinner) == 0
-                    || !self.pieces[pinner as usize].has_opposite_vector(*attack)
+                !opponent_player_bitboard.has(pinner)
+                    || !self.pieces[pinner.as_usize()].has_opposite_vector(*attack)
             }) {
                 continue;
             }
-            pinned_pieces |= (1 << res) | (1 << pinner.unwrap());
+            pinned_pieces |= C::Bitboard::bit(res) | C::Bitboard::bit(pinner.unwrap());
         }
         pinned_pieces
     }
 
-    pub fn get_pin_ray_mask(&self, king_sq: u8, pinned_sq: u8) -> u128 {
-        let mut mask = 0;
-        let k_file = (king_sq % C::WIDTH as u8) as i16;
-        let k_rank = (king_sq / C::WIDTH as u8) as i16;
-        let p_file = (pinned_sq % C::WIDTH as u8) as i16;
-        let p_rank = (pinned_sq / C::WIDTH as u8) as i16;
+    pub fn get_pin_ray_mask(&self, king_sq: C::Square, pinned_sq: C::Square) -> C::Bitboard {
+        let mut mask = C::Bitboard::ZERO;
+        let k_file = (king_sq.as_usize() % C::WIDTH) as i16;
+        let k_rank = (king_sq.as_usize() / C::WIDTH) as i16;
+        let p_file = (pinned_sq.as_usize() % C::WIDTH) as i16;
+        let p_rank = (pinned_sq.as_usize() / C::WIDTH) as i16;
 
         let d_file = (p_file - k_file).signum();
         let d_rank = (p_rank - k_rank).signum();
         let vector = d_rank * (C::WIDTH as i16) + d_file;
 
-        let mut current = king_sq as i16;
+        let mut current = king_sq.as_usize() as i16;
         loop {
             current += vector;
             if current < 0 || current >= C::AREA as i16 {
                 break;
             }
-            mask |= 1_u128 << current;
+            mask |= C::Bitboard::bit(C::Square::from_usize(current as usize));
 
-            if (self.occupancy_board & (1_u128 << current)) != 0 && current != pinned_sq as i16 {
+            if self.occupancy_board.has(C::Square::from_usize(current as usize)) && current != pinned_sq.as_usize() as i16 {
                 break;
             }
         }
         mask
     }
 
-    pub fn get_attack_bitboard_king_phase_through(&self, player: CurrentPlayer) -> u128 {
-        let mut attack_bitboard: u128 = 0;
+    pub fn get_attack_bitboard_king_phase_through(&self, player: CurrentPlayer) -> C::Bitboard {
+        let mut attack_bitboard = C::Bitboard::ZERO;
 
         let king_pos = self.get_king_position(self.current_player());
         let pieces_bitboard = if player == CurrentPlayer::White {
-            self.white_pieces_bitboard ^ (1_u128 << king_pos)
+            self.white_pieces_bitboard ^ C::Bitboard::bit(king_pos)
         } else {
-            self.black_pieces_bitboard ^ (1_u128 << king_pos)
+            self.black_pieces_bitboard ^ C::Bitboard::bit(king_pos)
         };
 
         for i in 0..C::AREA {
-            if pieces_bitboard & (1 << i) != 0 {
+            if pieces_bitboard.has(C::Square::from_usize(i)) {
                 let piece = &self.pieces[i];
                 let move_bitboard =
-                    piece.get_attack_bitboard(i as u8, self.occupancy_board, player.clone());
+                    piece.get_attack_bitboard(C::Square::from_usize(i), self.occupancy_board, player);
                 attack_bitboard |= move_bitboard;
             }
         }
         attack_bitboard
     }
 
-    pub fn get_attack_bitboard(&self, player: CurrentPlayer) -> u128 {
-        let mut attack_bitboard: u128 = 0;
+    pub fn get_attack_bitboard(&self, player: CurrentPlayer) -> C::Bitboard {
+        let mut attack_bitboard = C::Bitboard::ZERO;
         let pieces_bitboard = if player == CurrentPlayer::White {
             self.white_pieces_bitboard
         } else {
@@ -413,19 +414,19 @@ where
         };
 
         for i in 0..C::AREA {
-            if pieces_bitboard & (1 << i) != 0 {
+            if pieces_bitboard.has(C::Square::from_usize(i)) {
                 let piece = &self.pieces[i];
                 let move_bitboard =
-                    piece.get_attack_bitboard(i as u8, self.occupancy_board, player.clone());
+                    piece.get_attack_bitboard(C::Square::from_usize(i), self.occupancy_board, player);
                 attack_bitboard |= move_bitboard;
             }
         }
         attack_bitboard
     }
 
-    pub fn raycast(&self, vector: i8, start: u8, max_len: u8) -> Option<u8> {
+    pub fn raycast(&self, vector: i8, start: C::Square, max_len: usize) -> Option<C::Square> {
         let area = C::AREA as i16;
-        let mut current = start as i16;
+        let mut current = start.as_usize() as i16;
         let v = vector as i16;
 
         for _ in 0..max_len {
@@ -443,8 +444,8 @@ where
 
             current = next;
 
-            if (self.occupancy_board & (1_u128 << current as u8)) != 0 {
-                return Some(current as u8);
+            if self.occupancy_board.has(C::Square::from_usize(current as usize)) {
+                return Some(C::Square::from_usize(current as usize));
             }
         }
 
@@ -499,21 +500,21 @@ where
         let enemy_pieces = self.occupancy_board & !pieces_bitboard;
         let pinned_pieces = self.find_pins(self.current_player());
         for i in 0..C::AREA {
-            let piece_mask = pieces_bitboard & (1 << i);
-            let is_pinned = (pinned_pieces & piece_mask) != 0;
-            if piece_mask != 0 {
+            let square = C::Square::from_usize(i);
+            let is_pinned = pinned_pieces.has(square);
+            if pieces_bitboard.has(square) {
                 let piece = &self.pieces[i];
                 let mut move_bitboard =
-                    (piece.get_move_bitboard(i as u8, self.occupancy_board, self.current_player())
+                    (piece.get_move_bitboard(square, self.occupancy_board, self.current_player())
                         | (piece.get_attack_bitboard(
-                            i as u8,
+                            square,
                             self.occupancy_board,
                             self.current_player(),
                         ) & enemy_pieces))
                         & !pieces_bitboard;
                 if is_pinned {
                     move_bitboard &= self
-                        .get_pin_ray_mask(self.get_king_position(self.current_player()), i as u8);
+                        .get_pin_ray_mask(self.get_king_position(self.current_player()), square);
                 }
                 //todo: this rule could be applied better
                 if let PieceType::King(_) = piece {
@@ -522,8 +523,8 @@ where
                 }
 
                 for to in 0..C::AREA {
-                    if move_bitboard & (1 << to) != 0 {
-                        let is_capture = (enemy_pieces & (1_u128 << to)) != 0;
+                    if move_bitboard.has(C::Square::from_usize(to)) {
+                        let is_capture = enemy_pieces.has(C::Square::from_usize(to));
                         let flag = if is_capture {
                             MoveFlag::Capture
                         } else if matches!(piece, PieceType::Pawn(_))
@@ -545,31 +546,31 @@ where
 
                         if is_promotion {
                             moves.push(C::MoveType::new(
-                                i as u8,
-                                to as u8,
+                                square,
+                                C::Square::from_usize(to),
                                 Promotion,
                                 PieceType::Queen(Queen::default()),
                             ));
                             moves.push(C::MoveType::new(
-                                i as u8,
-                                to as u8,
+                                square,
+                                C::Square::from_usize(to),
                                 Promotion,
                                 PieceType::Rook(Rook::default()),
                             ));
                             moves.push(C::MoveType::new(
-                                i as u8,
-                                to as u8,
+                                square,
+                                C::Square::from_usize(to),
                                 Promotion,
                                 PieceType::Bishop(Bishop::default()),
                             ));
                             moves.push(C::MoveType::new(
-                                i as u8,
-                                to as u8,
+                                square,
+                                C::Square::from_usize(to),
                                 Promotion,
                                 PieceType::Knight(Knight::default()),
                             ));
                         } else {
-                            moves.push(C::MoveType::new(i as u8, to as u8, flag, PieceType::None));
+                            moves.push(C::MoveType::new(square, C::Square::from_usize(to), flag, PieceType::None));
                         }
                     }
                 }
@@ -577,13 +578,13 @@ where
                 if let PieceType::Pawn(_) = piece {
                     if let Some(ep_sq) = self.en_passant_square {
                         let mut pawn_attacks = piece.get_attack_bitboard(
-                            i as u8,
+                            square,
                             self.occupancy_board,
                             self.current_player(),
                         );
-                        if (pawn_attacks & (1_u128 << ep_sq)) != 0 {
+                        if pawn_attacks.has(ep_sq) {
                             let mov = C::MoveType::new(
-                                i as u8,
+                                square,
                                 ep_sq,
                                 MoveFlag::EnPassant,
                                 PieceType::None,
@@ -613,9 +614,8 @@ where
         moves
     }
 
-    fn is_square_attacked(&self, square: u8, attacker_color: CurrentPlayer) -> bool {
-        let sq_bit = 1_u128 << square;
-        (self.get_attack_bitboard(attacker_color) & sq_bit) > 0
+    fn is_square_attacked(&self, square: C::Square, attacker_color: CurrentPlayer) -> bool {
+        self.get_attack_bitboard(attacker_color).has(square)
     }
     fn generate_castling_for_rank(
         &self,
@@ -628,42 +628,42 @@ where
         let queenside_rook = offset;
         let king_to_kingside = king + 2;
         let king_to_queenside = king - 2;
-        let mut ks_empty = 0;
+        let mut ks_empty = C::Bitboard::ZERO;
         for square in king + 1..kingside_rook {
-            ks_empty |= 1_u128 << square;
+            ks_empty |= C::Bitboard::bit(C::Square::from_usize(square));
         }
-        let ks_rights = (1_u128 << king) | (1_u128 << kingside_rook);
+        let ks_rights = C::Bitboard::bit(C::Square::from_usize(king)) | C::Bitboard::bit(C::Square::from_usize(kingside_rook));
 
         let has_rights = (self.castling_rights & ks_rights) == ks_rights;
-        let is_empty = (self.occupancy_board & ks_empty) == 0;
-        let e_safe = !self.is_square_attacked(king as u8, player.other());
-        let f_safe = !self.is_square_attacked((king + 1) as u8, player.other());
-        let g_safe = !self.is_square_attacked(king_to_kingside as u8, player.other());
+        let is_empty = !(self.occupancy_board & ks_empty).any();
+        let e_safe = !self.is_square_attacked(C::Square::from_usize(king), player.other());
+        let f_safe = !self.is_square_attacked(C::Square::from_usize(king + 1), player.other());
+        let g_safe = !self.is_square_attacked(C::Square::from_usize(king_to_kingside), player.other());
 
         if has_rights && is_empty && e_safe && f_safe && g_safe {
             moves.push(C::MoveType::new(
-                king as u8,
-                king_to_kingside as u8,
+                C::Square::from_usize(king),
+                C::Square::from_usize(king_to_kingside),
                 MoveFlag::Castling,
                 PieceType::None,
             ));
         }
 
-        let mut qs_empty = 0;
+        let mut qs_empty = C::Bitboard::ZERO;
         for square in queenside_rook + 1..king {
-            qs_empty |= 1_u128 << square;
+            qs_empty |= C::Bitboard::bit(C::Square::from_usize(square));
         }
-        let qs_rights = (1_u128 << king) | (1_u128 << queenside_rook);
+        let qs_rights = C::Bitboard::bit(C::Square::from_usize(king)) | C::Bitboard::bit(C::Square::from_usize(queenside_rook));
 
         if (self.castling_rights & qs_rights) == qs_rights
-            && (self.occupancy_board & qs_empty) == 0
-            && !self.is_square_attacked(king as u8, player.other())
-            && !self.is_square_attacked((king - 1) as u8, player.other())
-            && !self.is_square_attacked(king_to_queenside as u8, player.other())
+            && !(self.occupancy_board & qs_empty).any()
+            && !self.is_square_attacked(C::Square::from_usize(king), player.other())
+            && !self.is_square_attacked(C::Square::from_usize(king - 1), player.other())
+            && !self.is_square_attacked(C::Square::from_usize(king_to_queenside), player.other())
         {
             moves.push(C::MoveType::new(
-                king as u8,
-                king_to_queenside as u8,
+                C::Square::from_usize(king),
+                C::Square::from_usize(king_to_queenside),
                 MoveFlag::Castling,
                 PieceType::None,
             ));
@@ -681,7 +681,7 @@ where
             self.apply_move(m);
             let king = self.get_king_position(current_player);
             let attacks = self.get_attack_bitboard(current_player.other());
-            if (attacks >> king) & 1 == 0 {
+            if !attacks.has(king) {
                 legal.push(m);
             }
             self.undo_move();
@@ -689,9 +689,9 @@ where
         legal
     }
 
-    pub fn get_check_block_squares(&self, player: CurrentPlayer) -> u128 {
+    pub fn get_check_block_squares(&self, player: CurrentPlayer) -> C::Bitboard {
         //very wrong i think
-        let mut block_bitboard = 0;
+        let mut block_bitboard = C::Bitboard::ZERO;
         let attack_vectors = crate::piece::get_all_possible_attack_vectors();
         let king_pos = self.get_king_position(self.current_player());
         let current_player_bitboard = if player == CurrentPlayer::White {
@@ -705,21 +705,21 @@ where
             self.white_pieces_bitboard
         };
         for vector in attack_vectors {
-            let mut maybe_block_bits = 0;
+            let mut maybe_block_bits = C::Bitboard::ZERO;
             let mut pos = Some(king_pos);
             loop {
-                if (pos.unwrap() as i16 + *vector as i16) < 0
-                    || (pos.unwrap() as i16 + *vector as i16) as usize >= C::AREA
+                if (pos.unwrap().as_usize() as i16 + *vector as i16) < 0
+                    || (pos.unwrap().as_usize() as i16 + *vector as i16) as usize >= C::AREA
                 {
                     break;
                 }
-                pos = (pos.unwrap() as i16 + *vector as i16).try_into().ok();
-                if (self.occupancy_board & (1 << pos.unwrap())) != 0 {
-                    if self.pieces[pos.unwrap() as usize].has_opposite_vector(*vector) {
+                pos = Some(C::Square::from_usize((pos.unwrap().as_usize() as i16 + *vector as i16) as usize));
+                if self.occupancy_board.has(pos.unwrap()) {
+                    if self.pieces[pos.unwrap().as_usize()].has_opposite_vector(*vector) {
                         block_bitboard |= maybe_block_bits;
                     }
                 } else {
-                    maybe_block_bits |= 1 << pos.unwrap();
+                    maybe_block_bits |= C::Bitboard::bit(pos.unwrap());
                 }
             }
         }
@@ -741,7 +741,7 @@ where
         let last_halfmove_clock = self.halfmove_clock;
         let last_en_passant_square = self.en_passant_square;
         let last_zobrist = self.zobrist;
-        let moved = self.pieces[move_.from() as usize].clone();
+        let moved = self.pieces[move_.from().as_usize()].clone();
         let board = &mut self.pieces;
         if !matches!(
             move_.flag(),
@@ -766,30 +766,30 @@ where
             self.verify_board_state("After apply_move");
             return Ok(());
         }
-        let captured = board[move_.to() as usize].clone();
-        if matches!(board[move_.from() as usize], (PieceType::Pawn(_)))
-            && i16::abs(move_.to() as i16 - move_.from() as i16) == 2 * C::WIDTH as i16
+        let captured = board[move_.to().as_usize()].clone();
+        if matches!(board[move_.from().as_usize()], (PieceType::Pawn(_)))
+            && i16::abs(move_.to().as_usize() as i16 - move_.from().as_usize() as i16) == 2 * C::WIDTH as i16
         {
             self.en_passant_square = if self.turn == CurrentPlayer::White {
-                Some(move_.from() - C::WIDTH as u8)
+                Some(C::Square::from_usize(move_.from().as_usize() - C::WIDTH))
             } else {
-                Some(move_.from() + C::WIDTH as u8)
+                Some(C::Square::from_usize(move_.from().as_usize() + C::WIDTH))
             };
         } else {
             self.en_passant_square = None;
         }
 
-        board[move_.to() as usize] = board[move_.from() as usize].clone();
-        board[move_.from() as usize] = PieceType::None;
+        board[move_.to().as_usize()] = board[move_.from().as_usize()].clone();
+        board[move_.from().as_usize()] = PieceType::None;
 
-        let moved_bit = (1 << move_.from());
-        let changed_bit = (1 << move_.to());
+        let moved_bit = C::Bitboard::bit(move_.from());
+        let changed_bit = C::Bitboard::bit(move_.to());
 
         self.occupancy_board = self.occupancy_board ^ moved_bit;
         self.occupancy_board = self.occupancy_board | changed_bit;
 
-        self.castling_rights &= !(1_u128 << move_.from());
-        self.castling_rights &= !(1_u128 << move_.to());
+        self.castling_rights &= !moved_bit;
+        self.castling_rights &= !changed_bit;
 
         if self.turn == CurrentPlayer::White {
             self.white_pieces_bitboard = self.white_pieces_bitboard & !moved_bit;
@@ -802,13 +802,13 @@ where
             self.white_pieces_bitboard = self.white_pieces_bitboard & !changed_bit;
             self.turn = CurrentPlayer::White;
         }
-        if captured != PieceType::None || matches!(board[move_.to() as usize], PieceType::Pawn(_)) {
+        if captured != PieceType::None || matches!(board[move_.to().as_usize()], PieceType::Pawn(_)) {
             self.halfmove_clock = 0;
         } else {
             self.halfmove_clock = self.halfmove_clock + 1;
         }
         if move_.flag() == MoveFlag::Promotion {
-            board[move_.to() as usize] = move_.promotion();
+            board[move_.to().as_usize()] = move_.promotion();
         }
 
         self.update_zobrist_after_move(
@@ -833,20 +833,20 @@ where
         match move_.flag() {
             MoveFlag::EnPassant => {
                 let captured_sq = if self.turn == CurrentPlayer::White {
-                    move_.to() + C::WIDTH as u8
+                    C::Square::from_usize(move_.to().as_usize() + C::WIDTH)
                 } else {
-                    move_.to() - C::WIDTH as u8
+                    C::Square::from_usize(move_.to().as_usize() - C::WIDTH)
                 };
 
-                let captured_piece = self.pieces[captured_sq as usize].clone();
+                let captured_piece = self.pieces[captured_sq.as_usize()].clone();
 
-                self.pieces[move_.to() as usize] = self.pieces[move_.from() as usize].clone();
-                self.pieces[move_.from() as usize] = PieceType::None;
-                self.pieces[captured_sq as usize] = PieceType::None;
+                self.pieces[move_.to().as_usize()] = self.pieces[move_.from().as_usize()].clone();
+                self.pieces[move_.from().as_usize()] = PieceType::None;
+                self.pieces[captured_sq.as_usize()] = PieceType::None;
 
-                let moved_bit = 1_u128 << move_.from();
-                let changed_bit = 1_u128 << move_.to();
-                let captured_bit = 1_u128 << captured_sq;
+                let moved_bit = C::Bitboard::bit(move_.from());
+                let changed_bit = C::Bitboard::bit(move_.to());
+                let captured_bit = C::Bitboard::bit(captured_sq);
 
                 self.occupancy_board &= !moved_bit;
                 self.occupancy_board |= changed_bit;
@@ -873,29 +873,30 @@ where
             }
 
             MoveFlag::Castling => {
-                self.pieces[move_.to() as usize] = self.pieces[move_.from() as usize].clone();
-                self.pieces[move_.from() as usize] = PieceType::None;
+                self.pieces[move_.to().as_usize()] = self.pieces[move_.from().as_usize()].clone();
+                self.pieces[move_.from().as_usize()] = PieceType::None;
 
                 let is_kingside = move_.to() > move_.from();
-                let rank_start = (move_.from() as usize / C::WIDTH) * C::WIDTH;
+                let rank_start = (move_.from().as_usize() / C::WIDTH) * C::WIDTH;
                 let rook_from = if is_kingside {
                     rank_start + C::WIDTH - 1
                 } else {
                     rank_start
-                } as u8;
+                };
                 let rook_to = if is_kingside {
-                    move_.from() + 1
+                    C::Square::from_usize(move_.from().as_usize() + 1)
                 } else {
-                    move_.from() - 1
+                    C::Square::from_usize(move_.from().as_usize() - 1)
                 };
 
-                self.pieces[rook_to as usize] = self.pieces[rook_from as usize].clone();
-                self.pieces[rook_from as usize] = PieceType::None;
+                let rook_from = C::Square::from_usize(rook_from);
+                self.pieces[rook_to.as_usize()] = self.pieces[rook_from.as_usize()].clone();
+                self.pieces[rook_from.as_usize()] = PieceType::None;
 
-                let k_from_bit = 1_u128 << move_.from();
-                let k_to_bit = 1_u128 << move_.to();
-                let r_from_bit = 1_u128 << rook_from;
-                let r_to_bit = 1_u128 << rook_to;
+                let k_from_bit = C::Bitboard::bit(move_.from());
+                let k_to_bit = C::Bitboard::bit(move_.to());
+                let r_from_bit = C::Bitboard::bit(rook_from);
+                let r_to_bit = C::Bitboard::bit(rook_to);
 
                 let clear_mask = !(k_from_bit | r_from_bit);
                 let set_mask = k_to_bit | r_to_bit;
@@ -948,12 +949,12 @@ where
             self.verify_board_state("After undo_move");
             return last_move.moved.clone();
         }
-        let from_bit = 1 << last_move.moved.from();
-        let to_bit = 1 << last_move.moved.to();
+        let from_bit = C::Bitboard::bit(last_move.moved.from());
+        let to_bit = C::Bitboard::bit(last_move.moved.to());
 
-        self.pieces[last_move.moved.from() as usize] =
-            self.pieces[last_move.moved.to() as usize].clone();
-        self.pieces[last_move.moved.to() as usize] = last_move.captured.clone();
+        self.pieces[last_move.moved.from().as_usize()] =
+            self.pieces[last_move.moved.to().as_usize()].clone();
+        self.pieces[last_move.moved.to().as_usize()] = last_move.captured.clone();
         if self.turn == CurrentPlayer::Black {
             self.white_pieces_bitboard |= from_bit;
 
@@ -983,7 +984,7 @@ where
             self.occupancy_board |= to_bit;
         }
         if last_move.moved.flag() == MoveFlag::Promotion {
-            self.pieces[last_move.moved.from() as usize] = Pawn(pawn::Pawn::default());
+            self.pieces[last_move.moved.from().as_usize()] = Pawn(pawn::Pawn::default());
         }
         self.castling_rights = last_move.last_castling_data;
         self.halfmove_clock = last_move.halfmove_clock;
@@ -997,21 +998,21 @@ where
         let from = last_move.moved.from();
         let to = last_move.moved.to();
 
-        let from_bit = 1_u128 << from;
-        let to_bit = 1_u128 << to;
+        let from_bit = C::Bitboard::bit(from);
+        let to_bit = C::Bitboard::bit(to);
 
         match last_move.moved.flag() {
             MoveFlag::EnPassant => {
                 let actual_captured_sq = if self.turn == CurrentPlayer::White {
-                    to - C::WIDTH as u8
+                    C::Square::from_usize(to.as_usize() - C::WIDTH)
                 } else {
-                    to + C::WIDTH as u8
+                    C::Square::from_usize(to.as_usize() + C::WIDTH)
                 };
-                let captured_bit = 1_u128 << actual_captured_sq;
+                let captured_bit = C::Bitboard::bit(actual_captured_sq);
 
-                self.pieces[from as usize] = self.pieces[to as usize].clone();
-                self.pieces[to as usize] = PieceType::None;
-                self.pieces[actual_captured_sq as usize] = last_move.captured.clone();
+                self.pieces[from.as_usize()] = self.pieces[to.as_usize()].clone();
+                self.pieces[to.as_usize()] = PieceType::None;
+                self.pieces[actual_captured_sq.as_usize()] = last_move.captured.clone();
 
                 if self.turn == CurrentPlayer::Black {
                     self.white_pieces_bitboard |= from_bit;
@@ -1032,23 +1033,24 @@ where
                 Ok(())
             }
             MoveFlag::Castling => {
-                self.pieces[from as usize] = self.pieces[to as usize].clone();
-                self.pieces[to as usize] = PieceType::None;
+                self.pieces[from.as_usize()] = self.pieces[to.as_usize()].clone();
+                self.pieces[to.as_usize()] = PieceType::None;
 
                 let is_kingside = to > from;
-                let rank_start = (from as usize / C::WIDTH) * C::WIDTH;
+                let rank_start = (from.as_usize() / C::WIDTH) * C::WIDTH;
                 let rook_from = if is_kingside {
                     rank_start + C::WIDTH - 1
                 } else {
                     rank_start
-                } as u8;
-                let rook_to = if is_kingside { from + 1 } else { from - 1 };
+                };
+                let rook_from = C::Square::from_usize(rook_from);
+                let rook_to = if is_kingside { C::Square::from_usize(from.as_usize() + 1) } else { C::Square::from_usize(from.as_usize() - 1) };
 
-                self.pieces[rook_from as usize] = self.pieces[rook_to as usize].clone();
-                self.pieces[rook_to as usize] = PieceType::None;
+                self.pieces[rook_from.as_usize()] = self.pieces[rook_to.as_usize()].clone();
+                self.pieces[rook_to.as_usize()] = PieceType::None;
 
-                let r_from_bit = 1_u128 << rook_from;
-                let r_to_bit = 1_u128 << rook_to;
+                let r_from_bit = C::Bitboard::bit(rook_from);
+                let r_to_bit = C::Bitboard::bit(rook_to);
 
                 let clear_mask = to_bit | r_to_bit;
                 let set_mask = from_bit | r_from_bit;
@@ -1077,9 +1079,9 @@ where
             .iter()
             .enumerate()
             .map(|(iter, ptype)| {
-                if self.white_pieces_bitboard & (1 << iter) != 0 {
+                if self.white_pieces_bitboard.has(C::Square::from_usize(iter)) {
                     Piece::White(ptype.clone())
-                } else if self.black_pieces_bitboard & (1 << iter) != 0 {
+                } else if self.black_pieces_bitboard.has(C::Square::from_usize(iter)) {
                     Piece::Black(ptype.clone())
                 } else {
                     Piece::None
@@ -1090,18 +1092,18 @@ where
             .unwrap()
     }
 
-    pub fn to_chess_notation(&self, pos: u8) -> String {
-        let file = ((pos % C::WIDTH as u8) + b'a') as char;
-        let rank = (pos / C::WIDTH as u8) + 1;
+    pub fn to_chess_notation(&self, pos: C::Square) -> String {
+        let file = ((pos.as_usize() % C::WIDTH) as u8 + b'a') as char;
+        let rank = pos.as_usize() / C::WIDTH + 1;
         format!("{}{}", file, rank)
     }
 
     pub fn debug_print_data(&self) {
-        println!("Occupancy Board: {:064b}", self.occupancy_board);
-        println!("White Pieces Bitboard: {:064b}", self.white_pieces_bitboard);
-        println!("Black Pieces Bitboard: {:064b}", self.black_pieces_bitboard);
-        println!("White Pins: {:064b}", self.find_pins(CurrentPlayer::White));
-        println!("Black Pins: {:064b}", self.find_pins(CurrentPlayer::Black));
+        println!("Occupancy Board: {:?}", self.occupancy_board);
+        println!("White Pieces Bitboard: {:?}", self.white_pieces_bitboard);
+        println!("Black Pieces Bitboard: {:?}", self.black_pieces_bitboard);
+        println!("White Pins: {:?}", self.find_pins(CurrentPlayer::White));
+        println!("Black Pins: {:?}", self.find_pins(CurrentPlayer::Black));
         println!("Castling Data: {:?}", self.castling_rights);
     }
 
@@ -1109,11 +1111,11 @@ where
         self.turn.clone()
     }
 
-    pub fn castling_rights(&self) -> u128 {
+    pub fn castling_rights(&self) -> C::Bitboard {
         self.castling_rights
     }
 
-    pub fn en_passant_square(&self) -> Option<u8> {
+    pub fn en_passant_square(&self) -> Option<C::Square> {
         self.en_passant_square
     }
 
@@ -1132,9 +1134,9 @@ where
     pub fn piece_at(&self, square: usize) -> Piece<C> {
         assert!(square < C::AREA, "Square index is outside the board");
         let piece = self.pieces[square].clone();
-        if self.white_pieces_bitboard & (1_u128 << square) != 0 {
+        if self.white_pieces_bitboard.has(C::Square::from_usize(square)) {
             Piece::White(piece)
-        } else if self.black_pieces_bitboard & (1_u128 << square) != 0 {
+        } else if self.black_pieces_bitboard.has(C::Square::from_usize(square)) {
             Piece::Black(piece)
         } else {
             Piece::None
@@ -1150,20 +1152,20 @@ where
         move_: C::MoveType,
         moved: &PieceType<C>,
         captured: &PieceType<C>,
-        old_castling_rights: u128,
-        old_en_passant_square: Option<u8>,
+        old_castling_rights: C::Bitboard,
+        old_en_passant_square: Option<C::Square>,
     ) {
         let mover = self.turn.other();
         self.zobrist ^= Self::zobrist_key(0xBB67_AE85_84CA_A73B);
         self.zobrist ^= Self::piece_zobrist_key(moved, mover, move_.from());
         self.zobrist ^=
-            Self::piece_zobrist_key(&self.pieces[move_.to() as usize], mover, move_.to());
+            Self::piece_zobrist_key(&self.pieces[move_.to().as_usize()], mover, move_.to());
 
         if let Some(captured_square) = match move_.flag() {
             MoveFlag::EnPassant => Some(if mover == CurrentPlayer::White {
-                move_.to() + C::WIDTH as u8
+                C::Square::from_usize(move_.to().as_usize() + C::WIDTH)
             } else {
-                move_.to() - C::WIDTH as u8
+                C::Square::from_usize(move_.to().as_usize() - C::WIDTH)
             }),
             _ if !matches!(captured, PieceType::None) => Some(move_.to()),
             _ => None,
@@ -1173,29 +1175,29 @@ where
 
         if move_.flag() == MoveFlag::Castling {
             let is_kingside = move_.to() > move_.from();
-            let rank_start = (move_.from() as usize / C::WIDTH) * C::WIDTH;
+            let rank_start = (move_.from().as_usize() / C::WIDTH) * C::WIDTH;
             let rook_from = if is_kingside {
                 rank_start + C::WIDTH - 1
             } else {
                 rank_start
-            } as u8;
-            let rook_to = if is_kingside { move_.from() + 1 } else { move_.from() - 1 };
-            let rook = &self.pieces[rook_to as usize];
+            };
+            let rook_from = C::Square::from_usize(rook_from);
+            let rook_to = if is_kingside { C::Square::from_usize(move_.from().as_usize() + 1) } else { C::Square::from_usize(move_.from().as_usize() - 1) };
+            let rook = &self.pieces[rook_to.as_usize()];
             self.zobrist ^= Self::piece_zobrist_key(rook, mover, rook_from);
             self.zobrist ^= Self::piece_zobrist_key(rook, mover, rook_to);
         }
 
         let mut changed_castling_rights = old_castling_rights ^ self.castling_rights;
-        while changed_castling_rights != 0 {
-            let square = changed_castling_rights.trailing_zeros() as u8;
-            self.zobrist ^= Self::zobrist_key(0x3C6E_F372_FE94_F82B ^ square as u64);
-            changed_castling_rights &= changed_castling_rights - 1;
+        while let Some(square) = changed_castling_rights.first_set() {
+            self.zobrist ^= Self::zobrist_key(0x3C6E_F372_FE94_F82B ^ square.as_usize() as u64);
+            changed_castling_rights &= !C::Bitboard::bit(square);
         }
         if let Some(square) = old_en_passant_square {
-            self.zobrist ^= Self::zobrist_key(0xA54F_F53A_5F1D_36F1 ^ square as u64);
+            self.zobrist ^= Self::zobrist_key(0xA54F_F53A_5F1D_36F1 ^ square.as_usize() as u64);
         }
         if let Some(square) = self.en_passant_square {
-            self.zobrist ^= Self::zobrist_key(0xA54F_F53A_5F1D_36F1 ^ square as u64);
+            self.zobrist ^= Self::zobrist_key(0xA54F_F53A_5F1D_36F1 ^ square.as_usize() as u64);
         }
     }
 
@@ -1206,16 +1208,16 @@ where
 
         let mut hash = 0;
         for square in 0..C::AREA {
-            let color = if self.white_pieces_bitboard & (1_u128 << square) != 0 {
+            let color = if self.white_pieces_bitboard.has(C::Square::from_usize(square)) {
                 Some(CurrentPlayer::White)
-            } else if self.black_pieces_bitboard & (1_u128 << square) != 0 {
+            } else if self.black_pieces_bitboard.has(C::Square::from_usize(square)) {
                 Some(CurrentPlayer::Black)
             } else {
                 None
             };
 
             if let Some(color) = color {
-                hash ^= Self::piece_zobrist_key(&self.pieces[square], color, square as u8);
+                hash ^= Self::piece_zobrist_key(&self.pieces[square], color, C::Square::from_usize(square));
             }
         }
 
@@ -1223,12 +1225,12 @@ where
             hash ^= Self::zobrist_key(SIDE_SEED);
         }
         for square in 0..C::AREA {
-            if self.castling_rights & (1_u128 << square) != 0 {
+            if self.castling_rights.has(C::Square::from_usize(square)) {
                 hash ^= Self::zobrist_key(CASTLING_SEED ^ square as u64);
             }
         }
         if let Some(square) = self.en_passant_square {
-            hash ^= Self::zobrist_key(EN_PASSANT_SEED ^ square as u64);
+            hash ^= Self::zobrist_key(EN_PASSANT_SEED ^ square.as_usize() as u64);
         }
         hash
     }
@@ -1245,7 +1247,7 @@ where
         }
     }
 
-    fn piece_zobrist_key(piece: &PieceType<C>, color: CurrentPlayer, square: u8) -> u64 {
+    fn piece_zobrist_key(piece: &PieceType<C>, color: CurrentPlayer, square: C::Square) -> u64 {
         let Some(piece) = Self::piece_index(piece) else {
             return 0;
         };
@@ -1253,7 +1255,7 @@ where
             CurrentPlayer::White => 0,
             CurrentPlayer::Black => 1,
         };
-        Self::zobrist_key(0x6A09_E667_F3BC_C909 ^ ((color * 6 + piece) * 128 + square as u64))
+        Self::zobrist_key(0x6A09_E667_F3BC_C909 ^ ((color * 6 + piece) * 128 + square.as_usize() as u64))
     }
 
     fn zobrist_key(mut value: u64) -> u64 {
@@ -1270,9 +1272,9 @@ where
         for i in 0..64 {
             let has_piece = !matches!(self.pieces[i], PieceType::None);
 
-            let in_white_bb = (self.white_pieces_bitboard & (1_u128 << i)) != 0;
-            let in_black_bb = (self.black_pieces_bitboard & (1_u128 << i)) != 0;
-            let in_occ = (self.occupancy_board & (1_u128 << i)) != 0;
+            let in_white_bb = self.white_pieces_bitboard.has(C::Square::from_usize(i));
+            let in_black_bb = self.black_pieces_bitboard.has(C::Square::from_usize(i));
+            let in_occ = self.occupancy_board.has(C::Square::from_usize(i));
 
             let bitboard_has_piece = in_white_bb || in_black_bb;
 
@@ -1283,7 +1285,7 @@ where
                 println!("\n========================================");
                 println!("CRITICAL STATE DESYNC DETECTED!");
                 println!("Context: {}", context);
-                println!("Square Index: {} ({})", i, self.to_chess_notation(i as u8));
+                println!("Square Index: {} ({})", i, self.to_chess_notation(C::Square::from_usize(i)));
                 println!("Has physical piece in array: {}", has_piece);
                 if has_piece {
                     println!("Piece type: {:?}", self.pieces[i]);

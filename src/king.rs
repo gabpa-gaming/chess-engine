@@ -1,8 +1,10 @@
 use std::marker::PhantomData;
 
+use crate::bitboard::{Bitboard, BitboardIndex};
 use crate::board_config::BoardConfig;
 use crate::chess_board::CurrentPlayer;
 use crate::piece::PieceBehavior;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct King<C: BoardConfig>
 where
@@ -11,74 +13,30 @@ where
     _marker: PhantomData<C>,
 }
 
-impl<C: BoardConfig> King<C>
+impl<C: BoardConfig> PieceBehavior<C> for King<C>
 where
     [(); C::AREA]: Sized,
 {
-    pub const MOVE_BITBOARDS: [u128; C::AREA] = Self::generate_move_bitboards();
-
-    const fn generate_move_bitboards() -> [u128; C::AREA] {
-        let mut bitboards = [0; C::AREA];
-        let mut i = 0;
-
-        while i < C::AREA {
-            let mut moves: u128 = 0;
-
-            let rank = i / C::WIDTH;
-            let file = i % C::WIDTH;
-
-            if rank + 1 < C::HEIGHT {
-                let up_idx = i + C::WIDTH;
-                moves |= 1 << up_idx; // N
-
-                if file > 0 {
-                    moves |= 1 << (up_idx - 1);
-                } // NW
-                if file + 1 < C::WIDTH {
-                    moves |= 1 << (up_idx + 1);
-                } // NE
+    fn get_move_bit_board(&self, pos: C::Square, _occupancy: C::Bitboard, _color: CurrentPlayer) -> C::Bitboard {
+        let rank = pos.as_usize() / C::WIDTH;
+        let file = pos.as_usize() % C::WIDTH;
+        let mut moves = C::Bitboard::ZERO;
+        for rank_offset in -1_i32..=1 {
+            for file_offset in -1_i32..=1 {
+                if rank_offset == 0 && file_offset == 0 { continue; }
+                let target_rank = rank as i32 + rank_offset;
+                let target_file = file as i32 + file_offset;
+                if target_rank >= 0 && target_rank < C::HEIGHT as i32 && target_file >= 0 && target_file < C::WIDTH as i32 {
+                    moves |= C::Bitboard::bit(C::Square::from_usize(target_rank as usize * C::WIDTH + target_file as usize));
+                }
             }
-
-            // SOUTH (Rank - 1)
-            if rank > 0 {
-                let down_idx = i - C::WIDTH;
-                moves |= 1 << down_idx; // S
-
-                if file > 0 {
-                    moves |= 1 << (down_idx - 1);
-                } // SW
-                if file + 1 < C::WIDTH {
-                    moves |= 1 << (down_idx + 1);
-                } // SE
-            }
-
-            if file > 0 {
-                moves |= 1 << (i - 1);
-            } // W
-            if file + 1 < C::WIDTH {
-                moves |= 1 << (i + 1);
-            } // E
-
-            bitboards[i] = moves;
-            i += 1;
         }
-        bitboards
-    }
-}
-
-impl<C: BoardConfig> PieceBehavior for King<C>
-where
-    [(); C::AREA]: Sized,
-{
-    fn get_move_bit_board(&self, pos: u8, _occupancy: u128, color: CurrentPlayer) -> u128 {
-        Self::MOVE_BITBOARDS[pos as usize]
+        moves
     }
 
-    fn get_attack_bitboard(&self, pos: u8, _occupancy: u128, _color: CurrentPlayer) -> u128 {
-        Self::MOVE_BITBOARDS[pos as usize]
+    fn get_attack_bitboard(&self, pos: C::Square, occupancy: C::Bitboard, color: CurrentPlayer) -> C::Bitboard {
+        self.get_move_bit_board(pos, occupancy, color)
     }
 
-    fn is_slider(&self) -> bool {
-        false
-    }
+    fn is_slider(&self) -> bool { false }
 }

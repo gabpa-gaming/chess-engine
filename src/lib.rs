@@ -1,5 +1,6 @@
 #![feature(generic_const_exprs)]
 pub mod bishop;
+pub mod bitboard;
 pub mod board_config;
 pub mod chess_board;
 pub mod chess_engine;
