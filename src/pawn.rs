@@ -13,6 +13,16 @@ where
     _marker: PhantomData<C>,
 }
 
+impl<C: BoardConfig> Pawn<C>
+where
+    [(); C::AREA]: Sized,
+{
+    pub const MOVE_BITBOARDS_BLACK: &'static [C::Bitboard] = C::PAWN_BLACK_MOVE_BITBOARDS;
+    pub const MOVE_BITBOARDS_WHITE: &'static [C::Bitboard] = C::PAWN_WHITE_MOVE_BITBOARDS;
+    pub const ATTACK_BITBOARDS_BLACK: &'static [C::Bitboard] = C::PAWN_BLACK_ATTACK_BITBOARDS;
+    pub const ATTACK_BITBOARDS_WHITE: &'static [C::Bitboard] = C::PAWN_WHITE_ATTACK_BITBOARDS;
+}
+
 impl<C: BoardConfig> PieceBehavior<C> for Pawn<C>
 where
     [(); C::AREA]: Sized,
@@ -39,19 +49,10 @@ where
     }
 
     fn get_attack_bitboard(&self, pos: C::Square, _occupancy: C::Bitboard, color: CurrentPlayer) -> C::Bitboard {
-        let index = pos.as_usize();
-        let rank = index / C::WIDTH;
-        let file = index % C::WIDTH;
-        let direction: isize = match color { CurrentPlayer::White => -1, CurrentPlayer::Black => 1 };
-        let target_rank = rank as isize + direction;
-        if !(0..C::HEIGHT as isize).contains(&target_rank) { return C::Bitboard::ZERO; }
-        let mut attacks = C::Bitboard::ZERO;
-        for target_file in [file.checked_sub(1), (file + 1 < C::WIDTH).then_some(file + 1)] {
-            if let Some(target_file) = target_file {
-                attacks |= C::Bitboard::bit(C::Square::from_usize(target_rank as usize * C::WIDTH + target_file));
-            }
+        match color {
+            CurrentPlayer::White => Self::ATTACK_BITBOARDS_WHITE[pos.as_usize()],
+            CurrentPlayer::Black => Self::ATTACK_BITBOARDS_BLACK[pos.as_usize()],
         }
-        attacks
     }
 
     fn is_slider(&self) -> bool { false }

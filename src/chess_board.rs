@@ -689,43 +689,6 @@ where
         legal
     }
 
-    pub fn get_check_block_squares(&self, player: CurrentPlayer) -> C::Bitboard {
-        //very wrong i think
-        let mut block_bitboard = C::Bitboard::ZERO;
-        let attack_vectors = crate::piece::get_all_possible_attack_vectors();
-        let king_pos = self.get_king_position(self.current_player());
-        let current_player_bitboard = if player == CurrentPlayer::White {
-            self.white_pieces_bitboard
-        } else {
-            self.black_pieces_bitboard
-        };
-        let opponent_player_bitboard = if player == CurrentPlayer::White {
-            self.black_pieces_bitboard
-        } else {
-            self.white_pieces_bitboard
-        };
-        for vector in attack_vectors {
-            let mut maybe_block_bits = C::Bitboard::ZERO;
-            let mut pos = Some(king_pos);
-            loop {
-                if (pos.unwrap().as_usize() as i16 + *vector as i16) < 0
-                    || (pos.unwrap().as_usize() as i16 + *vector as i16) as usize >= C::AREA
-                {
-                    break;
-                }
-                pos = Some(C::Square::from_usize((pos.unwrap().as_usize() as i16 + *vector as i16) as usize));
-                if self.occupancy_board.has(pos.unwrap()) {
-                    if self.pieces[pos.unwrap().as_usize()].has_opposite_vector(*vector) {
-                        block_bitboard |= maybe_block_bits;
-                    }
-                } else {
-                    maybe_block_bits |= C::Bitboard::bit(pos.unwrap());
-                }
-            }
-        }
-        block_bitboard
-    }
-
     pub fn apply_move_checked(&mut self, move_: C::MoveType) -> MoveLegality {
         match self.is_move_legal(move_) {
             MoveLegality::Legal => {

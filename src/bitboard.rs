@@ -12,7 +12,7 @@ pub trait BitboardIndex: Copy + Clone + Debug + Eq + Ord + Send + Sync + 'static
 macro_rules! impl_bitboard_index {
     ($($type:ty),* $(,)?) => {$ (
         impl BitboardIndex for $type {
-            fn from_usize(index: usize) -> Self { index.try_into().expect("Bitboard index is out of range") }
+            fn from_usize(index: usize) -> Self { index as Self }
             fn as_usize(self) -> usize { self as usize }
         }
     )*};
@@ -41,6 +41,7 @@ pub trait Bitboard:
     + ShlAssign<usize>
     + Shr<usize, Output = Self>
     + ShrAssign<usize>
+    + 'static
 {
     type Index: BitboardIndex;
     type Storage: Clone + Debug + Eq + Send + Sync;
