@@ -1,4 +1,6 @@
 #![feature(generic_const_exprs)]
+#![feature(const_trait_impl)]
+#![feature(const_ops)]
 pub mod bishop;
 pub mod bitboard;
 pub mod board_config;
