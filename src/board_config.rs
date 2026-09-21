@@ -1,4 +1,4 @@
-use crate::bitboard::{Bitboard, BitboardIndex, ConstBitboardOps};
+use crate::bitboard::{Bitboard, BitboardIndex};
 use crate::chess_move::{BigMove, MoveTrait, RegularMove};
 use std::fmt::Debug;
 

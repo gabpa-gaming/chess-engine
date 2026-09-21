@@ -1,6 +1,6 @@
 use anyhow::{Error, Result, anyhow};
 
-use crate::board_config::{BoardConfig, RegularVariant};
+use crate::board_config::{BoardConfig};
 use crate::chess_board::Chessboard;
 use crate::ml::{LinearModel, LinearStepper, MLModel, SimpleLayeredNetworkShape};
 use std::fmt::Debug;
@@ -43,13 +43,6 @@ pub struct MLEvaluator<C> {
 }
 
 impl<C> MLEvaluator<C> {
-    pub fn new(model: LinearModel) -> Self {
-        Self {
-            stepper: LinearStepper::new(model),
-            _phantom_data: PhantomData,
-        }
-    }
-
     pub fn from_model(model: MLModel) -> Self {
         Self {
             stepper: LinearStepper::from_ml_model(model),
@@ -64,7 +57,7 @@ where
     [(); 6 * C::AREA + 1 + 23]: Sized,
     [(); C::AREA]: Sized,
 {
-    fn evaluate(&self, cb: &Chessboard<C>) -> f32 {
+    fn evaluate(&self, _cb: &Chessboard<C>) -> f32 {
         self.stepper.get_output()
     }
 
@@ -151,7 +144,7 @@ where
     [(); 6 * C::AREA + 1 + 23]: Sized,
     [(); C::AREA]: Sized,
 {
-    fn evaluate(&self, cb: &Chessboard<C>) -> f32 {
+    fn evaluate(&self, _cb: &Chessboard<C>) -> f32 {
         f32::round(self.cached_output)
     }
 

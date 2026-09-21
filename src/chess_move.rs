@@ -87,7 +87,6 @@ impl MoveTrait<RegularVariant> for RegularMove {
             MoveFlag::DoublePawnPush => 2,
             MoveFlag::EnPassant => 3,
             MoveFlag::Castling => 4,
-            _ => 0,
         };
 
         let packed = (from as u16) | ((to as u16) << 6) | ((encoded_flag_promo as u16) << 12);

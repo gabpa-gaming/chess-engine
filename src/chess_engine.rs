@@ -5,7 +5,6 @@ use crate::chess_board::{Chessboard, CurrentPlayer, GameStatus};
 use crate::eval::Evaluator;
 use crate::game_controller::GameController;
 use crate::uci::SearchLimits;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -69,7 +68,7 @@ where
     {
         let max_depth = limits.depth.unwrap_or(99);
 
-        let mut cb = cb.clone();
+        let cb = cb.clone();
         
         for d in 1..max_depth {
             let result = Self::root_search(
@@ -152,17 +151,7 @@ where
     BestMove(C::MoveType, f32, u32)
 }
 
-pub struct Line<C: BoardConfig>
-where
-    C: BoardConfig + PartialEq + Eq,
 
-    C::MoveType: Send + Sync,
-    
-    [(); C::AREA]: Sized,
-{
-    score: f32,
-    moves: Vec<C::MoveType>
-}
 
 impl<C, E> Engine<C, E>
 where
@@ -324,7 +313,7 @@ where
         tt_table: &Arc<DashMap<u64, TTEntry<C>>>
     ) -> f32 {
         let mut alpha = alpha;
-        if (depth_left == 0) {
+        if depth_left == 0 {
             return eval.evaluate(cb);
         }
 
@@ -356,7 +345,7 @@ where
         }
         for mov in moves {
             *nodes_searched = *nodes_searched + 1;
-            cb.apply_move(mov);
+            _ = cb.apply_move(mov);
             eval.on_make_move(cb, &mov);
             let score = Self::alpha_beta_min(eval, cb, alpha, beta, depth_left - 1, nodes_searched, &tt_table);
             cb.undo_move();
@@ -430,7 +419,7 @@ where
         for mov in moves {
             *nodes_searched += 1;
     
-            cb.apply_move(mov);
+            _ = cb.apply_move(mov);
             eval.on_make_move(cb, &mov);
     
             let score = Self::alpha_beta_max(

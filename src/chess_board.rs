@@ -1,6 +1,6 @@
 use crate::bishop::Bishop;
 use crate::bitboard::{Bitboard, BitboardIndex};
-use crate::board_config::{BoardConfig, RegularVariant};
+use crate::board_config::{BoardConfig};
 use crate::chess_move::MoveFlag::Promotion;
 use crate::chess_move::{MoveFlag, MoveTrait};
 use crate::knight::Knight;
@@ -577,7 +577,7 @@ where
 
                 if let PieceType::Pawn(_) = piece {
                     if let Some(ep_sq) = self.en_passant_square {
-                        let mut pawn_attacks = piece.get_attack_bitboard(
+                        let pawn_attacks = piece.get_attack_bitboard(
                             square,
                             self.occupancy_board,
                             self.current_player(),
@@ -590,7 +590,7 @@ where
                                 PieceType::None,
                             );
 
-                            self.apply_move(mov);
+                            _ = self.apply_move(mov);
                             if !self.is_king_checked(self.turn.other()) {
                                 moves.push(mov);
                             }
@@ -600,7 +600,7 @@ where
                 }
             }
         }
-        if (is_checked) {
+        if is_checked {
             return moves;
         }
         match self.current_player() {
@@ -678,7 +678,7 @@ where
         let mut legal = Vec::new();
         let current_player = self.turn;
         for m in semilegal {
-            self.apply_move(m);
+            _ = self.apply_move(m);
             let king = self.get_king_position(current_player);
             let attacks = self.get_attack_bitboard(current_player.other());
             if !attacks.has(king) {
@@ -692,7 +692,7 @@ where
     pub fn apply_move_checked(&mut self, move_: C::MoveType) -> MoveLegality {
         match self.is_move_legal(move_) {
             MoveLegality::Legal => {
-                self.apply_move(move_);
+                _ = self.apply_move(move_);
                 MoveLegality::Legal
             }
             legality => legality,
@@ -730,7 +730,7 @@ where
             return Ok(());
         }
         let captured = board[move_.to().as_usize()].clone();
-        if matches!(board[move_.from().as_usize()], (PieceType::Pawn(_)))
+        if matches!(board[move_.from().as_usize()], PieceType::Pawn(_))
             && i16::abs(move_.to().as_usize() as i16 - move_.from().as_usize() as i16) == 2 * C::WIDTH as i16
         {
             self.en_passant_square = if self.turn == CurrentPlayer::White {

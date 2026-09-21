@@ -21,7 +21,7 @@ pub trait PieceBehavior<C: BoardConfig> {
         &[]
     }
 
-    fn has_opposite_vector(&self, vector: i8) -> bool {
+    fn has_opposite_vector(&self, _vector: i8) -> bool {
         false
     }
 }

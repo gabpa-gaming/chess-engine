@@ -7,7 +7,6 @@ mod tests {
     use chess_engine::game_controller::GameController;
     use chess_engine::ml::{LinearModel, LinearStepper};
     use chess_engine::chess_move::{MoveFlag, MoveTrait};
-    use super::*; 
 
     #[test]
     fn test_standard_start_position() {
@@ -164,7 +163,7 @@ mod tests {
         let moves = game.generate_moves().unwrap_or(Vec::new());
 
         for m in moves {
-            game.apply_move(m);
+            _ = game.apply_move(m);
             assert_ne!(game.zobrist_hash(), original_hash, "Hash did not change for move: {:?}", m);
             game.undo_move();
             assert_eq!(game.zobrist_hash(), original_hash, "Hash was not restored for move: {:?}", m);
