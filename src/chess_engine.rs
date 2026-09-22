@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use dashmap::{DashMap};
 use crate::board_config::BoardConfig;
 use crate::chess_board::{Chessboard, CurrentPlayer, GameStatus};
@@ -29,7 +30,7 @@ where
     [(); C::AREA]: Sized,
 {
     fn get_next_move(&self) -> Option<C::MoveType>;
-    fn search(&mut self, cb: &Chessboard<C>, limits: SearchLimits);
+    fn search(&mut self, cb: &Chessboard<C>, limits: SearchLimits, stop: Arc<AtomicBool>);
     fn get_nodes_searched(&self) -> u64;
     fn get_score(&self) -> f32;
     fn evaluate(&mut self, cb: &Chessboard<C>) -> f32;
@@ -60,7 +61,7 @@ where
     
     [(); C::AREA]: Sized,
 {
-    fn search(&mut self, cb: &Chessboard<C>, limits: SearchLimits)
+    fn search(&mut self, cb: &Chessboard<C>, limits: SearchLimits, stop: Arc<AtomicBool>)
     where
         E: Clone + Send + Sync,
         C: BoardConfig + Clone + Debug + Send + Sync,
@@ -69,6 +70,8 @@ where
         let max_depth = limits.depth.unwrap_or(99);
 
         let cb = cb.clone();
+
+        self.best_move = None;
         
         for d in 1..max_depth {
             let result = Self::root_search(
@@ -76,6 +79,7 @@ where
                     &self.evaluator,
                     d,
                     &self.best_moves,
+                    &stop,
                 );
             
                 match result {
@@ -113,6 +117,13 @@ where
                     }
                 }
         }
+        if let Some(mov) = self.best_move{
+            let uci_mov = GameController::move_to_uci(&mov);
+            println!("bestmove {}", uci_mov);
+        } else {
+            println!("bestmove 0000");
+        }
+                                
     }
 
     fn evaluate(&mut self, cb: &Chessboard<C>) -> f32 {
@@ -175,6 +186,7 @@ where
         eval: &E,
         depth: u32,
         tt_table: &Arc<DashMap<u64, TTEntry<C>>>,
+        stop: &Arc<AtomicBool>
     ) -> RootSearchResult<C>
     where
         E: Clone + Send + Sync,
@@ -205,7 +217,7 @@ where
         let mut root_eval = eval.clone();
         root_eval.init(&root);
     
-        let weighted: Vec<_> = moves
+        let weighted: Option<Vec<_>> = moves
             .into_par_iter()
             .map_init(
                 || {
@@ -229,6 +241,7 @@ where
                             depth as i32 - 1,
                             &mut nodes,
                             tt_table,
+                            stop
                         ),
     
                         CurrentPlayer::Black => Self::alpha_beta_max(
@@ -239,17 +252,25 @@ where
                             depth as i32 - 1,
                             &mut nodes,
                             tt_table,
+                            stop
                         ),
                     };
-    
+
+                    
                     board.undo_move();
                     evaluator.on_undo_move(board, &mov);
     
-                    (score, mov, nodes)
+                    Some((score?, mov, nodes))
                 },
             )
             .collect();
-    
+        
+        let weighted = if let Some(w) = weighted {
+            w 
+        } else {
+            return RootSearchResult::None;
+        };
+        
         let nodes: u64 = weighted.iter().map(|(_, _, nodes)| *nodes).sum();
     
         let best = match player {
@@ -310,11 +331,12 @@ where
         beta: f32,
         depth_left: i32,
         nodes_searched: &mut u64,
-        tt_table: &Arc<DashMap<u64, TTEntry<C>>>
-    ) -> f32 {
+        tt_table: &Arc<DashMap<u64, TTEntry<C>>>,
+        stop: &Arc<AtomicBool>
+    ) -> Option<f32> {
         let mut alpha = alpha;
         if depth_left == 0 {
-            return eval.evaluate(cb);
+            return Some(eval.evaluate(cb));
         }
 
         let key = cb.zobrist_hash();
@@ -331,10 +353,10 @@ where
             Err(err) => {
                 return match err {
                     GameStatus::Won(color) => match color {
-                        CurrentPlayer::White => MATE_SCORE + depth_left as f32,
-                        CurrentPlayer::Black => -MATE_SCORE - depth_left as f32,
+                        CurrentPlayer::White => Some(MATE_SCORE + depth_left as f32),
+                        CurrentPlayer::Black => Some(-MATE_SCORE - depth_left as f32),
                     },
-                    _ => 0.0,
+                    _ => Some(0.0),
                 }
             }
         };
@@ -347,7 +369,7 @@ where
             *nodes_searched = *nodes_searched + 1;
             _ = cb.apply_move(mov);
             eval.on_make_move(cb, &mov);
-            let score = Self::alpha_beta_min(eval, cb, alpha, beta, depth_left - 1, nodes_searched, &tt_table);
+            let score = Self::alpha_beta_min(eval, cb, alpha, beta, depth_left - 1, nodes_searched, &tt_table, stop)?;
             cb.undo_move();
             eval.on_undo_move(cb, &mov);
             if score > best_val {
@@ -359,7 +381,7 @@ where
             }
             if score >= beta {
                 tt_table.insert(key, TTEntry { depth: depth_left, best_move: mov });
-                return score;
+                return Some(score);
             }
         }
         
@@ -370,7 +392,7 @@ where
             });
         }
         
-        best_val
+        Some(best_val)
     }
 
     fn alpha_beta_min(
@@ -381,11 +403,15 @@ where
         depth_left: i32,
         nodes_searched: &mut u64,
         tt_table: &Arc<DashMap<u64, TTEntry<C>>>,
-    ) -> f32 {
+        stop: &Arc<AtomicBool>
+    ) -> Option<f32> {
+        if (*nodes_searched & 1023) == 0 && stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let mut beta = beta;
     
         if depth_left == 0 {
-            return eval.evaluate(cb);
+            return Some(eval.evaluate(cb));
         }
     
         let key = cb.zobrist_hash();
@@ -402,10 +428,10 @@ where
             Err(err) => {
                 return match err {
                     GameStatus::Won(color) => match color {
-                        CurrentPlayer::White => MATE_SCORE + depth_left as f32,
-                        CurrentPlayer::Black => -MATE_SCORE - depth_left as f32,
+                        CurrentPlayer::White => Some(MATE_SCORE + depth_left as f32),
+                        CurrentPlayer::Black => Some(-MATE_SCORE - depth_left as f32),
                     },
-                    _ => 0.0,
+                    _ => Some(0.0),
                 };
             }
         };
@@ -430,7 +456,8 @@ where
                 depth_left - 1,
                 nodes_searched,
                 tt_table,
-            );
+                &stop
+            )?;
     
             cb.undo_move();
             eval.on_undo_move(cb, &mov);
@@ -453,7 +480,7 @@ where
                     },
                 );
     
-                return score;
+                return Some(score);
             }
         }
     
@@ -467,6 +494,6 @@ where
             );
         }
     
-        best_val
+        Some(best_val)
     }
 }

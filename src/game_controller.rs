@@ -1,5 +1,5 @@
-use crate::board_config::{BoardConfig, RegularVariant};
 use crate::bitboard::BitboardIndex;
+use crate::board_config::{BoardConfig, RegularVariant};
 use crate::chess_board::{Chessboard, CurrentPlayer, MoveLegality};
 use crate::chess_engine::ChessEngine;
 use crate::chess_engine::Engine;
@@ -12,8 +12,11 @@ use anyhow::anyhow;
 use std::fmt::Debug;
 use std::io;
 use std::io::BufRead;
+use std::sync::atomic::AtomicBool;
+use std::thread;
 use std::time::Instant;
-
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct GameSettings {
     pub evaluator_name: String,
@@ -136,7 +139,12 @@ where
                 (4 + offset, 2 + offset) // e to c
             };
 
-            let castle_move = C::MoveType::new(C::Square::from_usize(from_sq), C::Square::from_usize(to_sq), MoveFlag::Castling, PieceType::None);
+            let castle_move = C::MoveType::new(
+                C::Square::from_usize(from_sq),
+                C::Square::from_usize(to_sq),
+                MoveFlag::Castling,
+                PieceType::None,
+            );
 
             let generated = self.chessboard.generate_moves().unwrap_or(Vec::new());
             if generated
@@ -394,7 +402,7 @@ where
 }
 
 impl GameController<RegularVariant> {
-    fn get_engine(name: &str) -> anyhow::Result<Box<dyn ChessEngine<RegularVariant>>> {
+    fn get_engine(name: &str) -> anyhow::Result<Box<dyn ChessEngine<RegularVariant> + Send>> {
         match name {
             "simple" => Ok(Box::new(Engine::new(DeadSimpleEvaluator {}))),
             e if e.starts_with("ml") => {
@@ -429,8 +437,10 @@ impl GameController<RegularVariant> {
         let stdin = io::stdin();
         let mut game = Self::new();
         let mut settings = GameSettings::default();
-        let mut engine: Box<dyn ChessEngine<RegularVariant>> =
-            Box::new(Engine::new(DeadSimpleEvaluator {}));
+        let mut engine: Option<Box<dyn ChessEngine<RegularVariant> + Send>> =
+            Some(Box::new(Engine::new(DeadSimpleEvaluator {})));
+        let mut search_handler = None;
+        let stop = Arc::new(AtomicBool::new(false));
         for line in stdin.lock().lines() {
             let Ok(line) = line else {
                 break;
@@ -501,20 +511,22 @@ impl GameController<RegularVariant> {
                         println!("bestmove 0000");
                         continue;
                     }
-                    if limits.go_variant == GoVariant::Eval {
-                        let score = engine.evaluate(game.chessboard());
-                        println!("info score cp {}", score.round() as i32);
-                        println!("bestmove 0000");
-                        continue;
-                    }
-                    let depth = limits.depth.unwrap_or(settings.search_max_depth);
-                    limits.depth = Some(depth);
-                    engine.search(game.chessboard(), limits);
-                    if let Some(best_move) = engine.get_next_move() {
-                        let uci_mov = Self::move_to_uci(&best_move);
-                        println!("bestmove {}", uci_mov);
-                    } else {
-                        println!("bestmove 0000");
+                    if let Some(mut eng) = engine.take() {
+                        if limits.go_variant == GoVariant::Eval {
+                            let score = eng.evaluate(game.chessboard());
+                            println!("info score cp {}", score.round() as i32);
+                            println!("bestmove 0000");
+                            continue;
+                        }
+                        let depth = limits.depth.unwrap_or(settings.search_max_depth);
+                        limits.depth = Some(depth);
+                        let chessboard = game.chessboard().clone();
+
+                        let stop = stop.clone();
+                        search_handler = Some(thread::spawn(move || {
+                            eng.search(&chessboard, limits, stop);
+                            eng
+                        }));
                     }
                 }
                 crate::uci::Command::Quit => break,
@@ -528,10 +540,13 @@ impl GameController<RegularVariant> {
                         }
                     }
                     "Evaluator" => {
+                        if let Some(mut handler) = search_handler.take() {
+                            engine = handler.join().ok();
+                        }
                         if let Some(value) = value {
                             match Self::get_engine(&value) {
                                 Ok(next_engine) => {
-                                    engine = next_engine;
+                                    engine = Some(next_engine);
                                     settings.evaluator_name = value;
                                 }
                                 Err(error) => {
@@ -542,8 +557,14 @@ impl GameController<RegularVariant> {
                     }
                     _ => {}
                 },
+                crate::uci::Command::Stop => {
+                    if let Some(mut handler) = search_handler.take() {
+                        stop.store(true, Ordering::Relaxed);
+                        engine = handler.join().ok();
+                        stop.store(false, Ordering::Relaxed)
+                    }
+                }
                 crate::uci::Command::Debug(_)
-                | crate::uci::Command::Stop
                 | crate::uci::Command::PonderHit
                 | crate::uci::Command::Unknown(_) => {}
             }
