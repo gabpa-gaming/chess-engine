@@ -439,7 +439,9 @@ impl GameController<RegularVariant> {
         let mut settings = GameSettings::default();
         let mut engine: Option<Box<dyn ChessEngine<RegularVariant> + Send>> =
             Some(Box::new(Engine::new(DeadSimpleEvaluator {})));
-        let mut search_handler = None;
+        let mut search_handler: Option<
+            thread::JoinHandle<Box<dyn ChessEngine<RegularVariant> + Send>>,
+        > = None;
         let stop = Arc::new(AtomicBool::new(false));
         for line in stdin.lock().lines() {
             let Ok(line) = line else {
@@ -453,7 +455,12 @@ impl GameController<RegularVariant> {
                     continue;
                 }
             };
-
+            if search_handler
+                .as_ref()
+                .is_some_and(|handler| handler.is_finished())
+            {
+                engine = search_handler.take().unwrap().join().ok();
+            }
             match command {
                 crate::uci::Command::Uci => {
                     println!("id name omni stork v{}", env!("CARGO_PKG_VERSION"));

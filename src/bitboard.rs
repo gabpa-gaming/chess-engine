@@ -128,6 +128,8 @@ pub trait Bitboard:
     fn any(self) -> bool;
 
     fn first_set(self) -> Option<Self::Index>;
+
+    fn last_set(self) -> Option<Self::Index>;
 }
 
 macro_rules! impl_integer_bitboard {
@@ -168,6 +170,15 @@ macro_rules! impl_integer_bitboard {
                                 self.trailing_zeros() as usize
                             )
                         )
+                    }
+                }
+                fn last_set(self) -> Option<Self::Index> {
+                    if self == Self::ZERO {
+                        None
+                    } else {
+                        Some(Self::Index::from_usize(
+                            (Self::BITS - 1 - self.leading_zeros()) as usize,
+                        ))
                     }
                 }
             }

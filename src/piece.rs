@@ -1,5 +1,7 @@
 use std::fmt::Debug;
-
+use std::marker::PhantomData;
+use crate::bitboard::BitboardIndex;
+use crate::bitboard::ConstBitboardOps;
 use crate::bishop::Bishop;
 use crate::board_config::BoardConfig;
 use crate::chess_board::CurrentPlayer;
@@ -24,6 +26,7 @@ pub trait PieceBehavior<C: BoardConfig> {
     fn has_opposite_vector(&self, _vector: i8) -> bool {
         false
     }
+    
 }
 
 pub fn get_all_possible_attack_vectors() -> &'static [i8] {
@@ -115,6 +118,8 @@ where
             _ => false,
         }
     }
+    
+    
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,5 +141,104 @@ where
             Piece::White(ptype) | Piece::Black(ptype) => ptype.clone(),
             _ => PieceType::None,
         }
+    }
+}
+
+pub struct SliderMoves<C: BoardConfig> {
+    _phantom_data: PhantomData<C>
+}
+
+impl<C: BoardConfig> SliderMoves<C>
+where 
+    [(); C::AREA]: Sized,
+{
+    const INCREASING: [bool; 8] = [
+            true, false, true, false,
+            true, true, false, false,
+        ];
+        
+    const DIRECTIONS: [(i32, i32); 8] = [
+        ( 1,  0),
+        (-1,  0),
+        ( 0,  1),
+        ( 0, -1),
+        ( 1,  1),
+        ( 1, -1),
+        (-1,  1),
+        (-1, -1),
+    ];
+    
+    pub const RAYS: [[C::Bitboard; 8]; C::AREA] = Self::generate_rays();
+
+    const fn generate_rays() -> [[C::Bitboard; 8]; C::AREA]
+    where
+        C::Bitboard: const ConstBitboardOps,
+    {
+        let mut rays = [[C::Bitboard::ZERO; 8]; C::AREA];
+        let mut square = 0;
+
+        while square < C::AREA {
+            let rank = (square / C::WIDTH) as i32;
+            let file = (square % C::WIDTH) as i32;
+
+            let mut direction = 0;
+            while direction < 8 {
+                let (dr, df) = Self::DIRECTIONS[direction];
+                let mut r = rank + dr;
+                let mut f = file + df;
+
+                while r >= 0
+                    && r < C::HEIGHT as i32
+                    && f >= 0
+                    && f < C::WIDTH as i32
+                {
+                    let index = r as usize * C::WIDTH + f as usize;
+                    let bit =
+                        <C::Bitboard as ConstBitboardOps>::const_bit(index);
+
+                    rays[square][direction] =
+                        <C::Bitboard as ConstBitboardOps>::const_or(
+                            rays[square][direction],
+                            bit,
+                        );
+
+                    r += dr;
+                    f += df;
+                }
+
+                direction += 1;
+            }
+
+            square += 1;
+        }
+
+        rays
+    }
+    
+    pub fn slider_attacks(
+        pos: C::Square,
+        occupancy: C::Bitboard,
+        directions: std::ops::Range<usize>,
+    ) -> C::Bitboard {
+        let mut attacks = C::Bitboard::ZERO;
+    
+        for direction in directions {
+            let mut ray = Self::RAYS[pos.as_usize()][direction];
+            let blockers = ray & occupancy;
+    
+            if blockers.any() {
+                let nearest = if Self::INCREASING[direction] {
+                    blockers.first_set().unwrap()
+                } else {
+                    blockers.last_set().unwrap()
+                };
+    
+                ray &= !Self::RAYS[nearest.as_usize()][direction];
+            }
+    
+            attacks |= ray;
+        }
+    
+        attacks
     }
 }

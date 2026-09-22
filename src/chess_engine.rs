@@ -1,5 +1,8 @@
-use std::sync::Arc;
+use std::thread;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use dashmap::{DashMap};
 use crate::board_config::BoardConfig;
 use crate::chess_board::{Chessboard, CurrentPlayer, GameStatus};
@@ -22,6 +25,7 @@ where
 {
     depth: i32,
     best_move: C::MoveType,
+    score: f32
 }
 
 pub trait ChessEngine<C: BoardConfig>
@@ -71,8 +75,24 @@ where
 
         let cb = cb.clone();
 
-        self.best_move = None;
+        let timer_stop = Arc::clone(&stop);
+        let time_budget = limits.time_budget(cb.current_player());
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         
+        let timer = time_budget.map(|time| {
+            let timer_stop = Arc::clone(&stop);
+        
+            thread::spawn(move || {
+                if matches!(
+                    done_rx.recv_timeout(time),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    timer_stop.store(true, Ordering::Relaxed);
+                }
+            })
+        });        
+        self.best_move = None;
+        self.evaluator.init(&cb);
         for d in 1..max_depth {
             let result = Self::root_search(
                     &cb,
@@ -123,9 +143,16 @@ where
         } else {
             println!("bestmove 0000");
         }
-                                
+        stop.store(false, Ordering::Relaxed);
+        let _ = done_tx.send(());
+        
+        if let Some(timer) = timer {
+            let _ = timer.join();
+        }
     }
 
+    
+    
     fn evaluate(&mut self, cb: &Chessboard<C>) -> f32 {
         self.evaluator.init(cb);
         self.evaluator.evaluate(cb)
@@ -334,17 +361,27 @@ where
         tt_table: &Arc<DashMap<u64, TTEntry<C>>>,
         stop: &Arc<AtomicBool>
     ) -> Option<f32> {
+        if (*nodes_searched & 1023) == 0 && stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let mut alpha = alpha;
         if depth_left == 0 {
             return Some(eval.evaluate(cb));
         }
 
         let key = cb.zobrist_hash();
-
-        let tt_move = tt_table
-            .get(&key)
-            .map(|entry| entry.best_move);
         
+        let tt_entry = tt_table
+                    .get(&key);
+        
+        if let Some(ref entry) = tt_entry {
+            if entry.depth >= depth_left {
+                return Some(entry.score);
+            }
+        }
+
+        let tt_move = tt_entry.map(|entry| entry.best_move);
+                
         let mut best_val = -ENG_INF;
         let mut best_mov = None;
         
@@ -380,7 +417,7 @@ where
                 }
             }
             if score >= beta {
-                tt_table.insert(key, TTEntry { depth: depth_left, best_move: mov });
+                tt_table.insert(key, TTEntry { depth: depth_left, best_move: mov, score});
                 return Some(score);
             }
         }
@@ -389,6 +426,7 @@ where
             tt_table.insert(key, TTEntry {
                 depth: depth_left,
                 best_move,
+                score: best_val
             });
         }
         
@@ -416,10 +454,17 @@ where
     
         let key = cb.zobrist_hash();
     
-        let tt_move = tt_table
-            .get(&key)
-            .map(|entry| entry.best_move);
-    
+        let tt_entry = tt_table
+            .get(&key);
+
+        if let Some(ref entry) = tt_entry {
+            if entry.depth >= depth_left {
+                return Some(entry.score);
+            }
+        }
+        
+        let tt_move = tt_entry.map(|entry| entry.best_move);
+        
         let mut best_val = ENG_INF;
         let mut best_mov = None;
     
@@ -477,6 +522,7 @@ where
                     TTEntry {
                         depth: depth_left,
                         best_move: mov,
+                        score
                     },
                 );
     
@@ -490,10 +536,41 @@ where
                 TTEntry {
                     depth: depth_left,
                     best_move,
+                    score: best_val
                 },
             );
         }
     
         Some(best_val)
+    }
+}
+
+impl SearchLimits {
+    pub fn time_budget(&self, player: CurrentPlayer) -> Option<Duration> {
+        if self.infinite || self.ponder {
+            return None;
+        }
+
+        if let Some(ms) = self.move_time {
+            return Some(Duration::from_millis(ms));
+        }
+
+        let (remaining, increment) = match player {
+            CurrentPlayer::White => (self.wtime, self.winc),
+            CurrentPlayer::Black => (self.btime, self.binc),
+        };
+
+        let remaining = remaining?;
+        let increment = increment.unwrap_or(0);
+        let moves = u64::from(self.moves_to_go.unwrap_or(30).max(1));
+
+        let reserve = (remaining / 10).min(50);
+        let available = remaining.saturating_sub(reserve);
+
+        let budget = (remaining / moves)
+            .saturating_add(increment.saturating_mul(4) / 5)
+            .min(available);
+
+        Some(Duration::from_millis(budget))
     }
 }

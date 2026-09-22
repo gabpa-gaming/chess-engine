@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-
+use crate::piece::SliderMoves;
 use crate::board_config::BoardConfig;
 use crate::chess_board::CurrentPlayer;
 use crate::piece::PieceBehavior;
@@ -92,7 +92,7 @@ where
     }
 
     fn get_attack_bitboard(&self, pos: C::Square, occupancy: C::Bitboard, color: CurrentPlayer) -> C::Bitboard {
-        self.get_move_bit_board(pos, occupancy, color)
+        SliderMoves::<C>::slider_attacks(pos, occupancy, 4..8)
     }
 
     fn is_slider(&self) -> bool {

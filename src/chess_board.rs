@@ -68,6 +68,7 @@ where
     en_passant_square: Option<C::Square>,
     halfmove_clock: u8,
     turn: CurrentPlayer,
+    attacker_cache: C::Bitboard,
     zobrist: u64,
     move_history: Vec<MoveHistoryData<C>>,
 }
@@ -127,6 +128,7 @@ where
             castling_rights: C::Bitboard::ZERO,
             en_passant_square: None,
             halfmove_clock: 0,
+            attacker_cache: C::Bitboard::ZERO,
             zobrist: 0,
             move_history: Vec::new(),
         }
@@ -142,9 +144,7 @@ where
         Chessboard::from_fen(fen).unwrap()
     }
 
-    pub fn is_move_semilegal(&self, move_: C::MoveType) -> MoveLegality
-    where
-            {
+    pub fn is_move_semilegal(&self, move_: C::MoveType) -> MoveLegality {
         match self.pieces[move_.from().as_usize()].clone() {
             PieceType::<C>::None => MoveLegality::IllegalOther,
             piece => {
@@ -614,9 +614,6 @@ where
         moves
     }
 
-    fn is_square_attacked(&self, square: C::Square, attacker_color: CurrentPlayer) -> bool {
-        self.get_attack_bitboard(attacker_color).has(square)
-    }
     fn generate_castling_for_rank(
         &self,
         moves: &mut Vec<C::MoveType>,
@@ -634,11 +631,12 @@ where
         }
         let ks_rights = C::Bitboard::bit(C::Square::from_usize(king)) | C::Bitboard::bit(C::Square::from_usize(kingside_rook));
 
+        let attacks = self.get_attack_bitboard(self.turn.other());
         let has_rights = (self.castling_rights & ks_rights) == ks_rights;
         let is_empty = !(self.occupancy_board & ks_empty).any();
-        let e_safe = !self.is_square_attacked(C::Square::from_usize(king), player.other());
-        let f_safe = !self.is_square_attacked(C::Square::from_usize(king + 1), player.other());
-        let g_safe = !self.is_square_attacked(C::Square::from_usize(king_to_kingside), player.other());
+        let e_safe = !attacks.has(C::Square::from_usize(king));
+        let f_safe = !attacks.has(C::Square::from_usize(king + 1));
+        let g_safe = !attacks.has(C::Square::from_usize(king_to_kingside));
 
         if has_rights && is_empty && e_safe && f_safe && g_safe {
             moves.push(C::MoveType::new(
@@ -657,9 +655,9 @@ where
 
         if (self.castling_rights & qs_rights) == qs_rights
             && !(self.occupancy_board & qs_empty).any()
-            && !self.is_square_attacked(C::Square::from_usize(king), player.other())
-            && !self.is_square_attacked(C::Square::from_usize(king - 1), player.other())
-            && !self.is_square_attacked(C::Square::from_usize(king_to_queenside), player.other())
+            && !attacks.has(C::Square::from_usize(king))
+            && !attacks.has(C::Square::from_usize(king - 1))
+            && !attacks.has(C::Square::from_usize(king_to_queenside))
         {
             moves.push(C::MoveType::new(
                 C::Square::from_usize(king),
