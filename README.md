@@ -1,4 +1,4 @@
-# Chess Engine
+# omni stork
 
 A modular chess engine built from scratch in Rust. It supports the UCI protocol, configurable board sizes and an experimental machine-learning evaluator.
 
